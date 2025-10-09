@@ -1,0 +1,24 @@
+**/__pycache__/
+
+# Python cache files
+*.pyc
+*.pyo
+
+# Environment folders
+venv/
+.env/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# data/wandb/experiment files
+wandb/
+**/logs/
+**/experiments/
+**/features/
+**/indices/
+**/splits/
+**/scripts/
+**/data_files/
+**/**/results/
