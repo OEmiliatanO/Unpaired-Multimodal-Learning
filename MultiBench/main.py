@@ -151,7 +151,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    outer_parser = argparse.ArgumentParser(description="Synthetic Search Experiment")
+    outer_parser = argparse.ArgumentParser(description="MultiBench Experiment")
     outer_parser.add_argument("-c", "--config", type=str, default="config.json", help="Configuration file")
     outer_parser.add_argument("-s", "--slurm", action="store_true", help="Launched with slurm")
     outer_parser.add_argument("-d", "--outer_debug", action="store_true", help="Debug mode")
@@ -190,29 +190,4 @@ if __name__ == "__main__":
         args.overwrite = outer_args.overwrite
         print("=> Parsed arguments:", args)
         main(args)
-    else:
-        def launch_job(i, combo):
-            gpu_id = random.choice(range(torch.cuda.device_count()))
-            env = os.environ.copy()
-            env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-
-            # Convert args to CLI format
-            cmd = ["python", "train.py"]
-            for k, v in combo.items():
-                cmd += [f"--{k}", str(v)]
-            # cmd += ["--overwrite"]  # optional flags
-            cmd += ["--outer_debug"]      # optional flags
-
-            print(f"[{i}] Launching on GPU {gpu_id}: {' '.join(cmd)}")
-            subprocess.run(cmd, env=env, check=True)
-            print(f"[{i}] Done on GPU {gpu_id}")
-
-        with ThreadPoolExecutor(max_workers=len(combinations)) as executor:
-            futures = [
-                executor.submit(launch_job, i, combo)
-                for i, combo in enumerate(combinations)
-            ]
-            for future in as_completed(futures):
-                future.result()
-        print("✅ All jobs complete.")
 

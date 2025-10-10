@@ -1,5 +1,5 @@
 # Better Together: Leveraging Unpaired Multimodal Data for Stronger Unimodal Models
-#### [Project Page](https://unpaired-multimodal.github.io/) | [Paper]() | [Bibtex](#bibtex)
+#### [Project Page](https://unpaired-multimodal.github.io/) | [Paper](https://arxiv.org/pdf/2510.08492) | [Bibtex](#bibtex)
 
 By [Sharut Gupta](https://www.mit.edu/~sharut/)$^{\dagger}$, [Shobhita Sundaram](https://ssundaram21.github.io/)$^{\dagger}$, [Chenyu Wang](https://chenyuwang-monica.github.io/)$^{\dagger}$, [Stefanie Jegelka](https://people.csail.mit.edu/stefje/)$^{\dagger \ddagger}$ and [Phillip Isola](https://web.mit.edu/phillipi/)$^{\dagger}$
 
@@ -122,7 +122,8 @@ python features.py \
 ```
 
 #### Training
-Train models using either configuration files (efficient for sweeps) or command-line arguments. Edit `configs/finetune.yaml` to specify your hyperparameter sweep or directly run,
+
+Train models using either configuration files (efficient for sweeps) or command-line arguments. For a single experiment, run:
 
 ```python
 python finetune.py \
@@ -137,14 +138,20 @@ python finetune.py \
     --image-augmentation crop \
     --eval-test
 ```
-To train unimodal models, use `--modality=image`. To train on the whole dataset use `--train-shot=-1` and for few-shot training, set `--train-shot` to the respective shot. While the code currently freezes the language model and trains the pretrained vision backbone and shared head, one can also freeze the vision backbone and only train the shared head to conduct linear probe experiments (as reported in our paper). 
-After training, results are saved in the `experiments/` directory with logs and checkpoints.
+
+For hyperparameter search, edit `configs/finetune.yaml` to specify sweep parameters (e.g., multiple datasets, seeds, or alpha values), then run:
+
+```bash
+python finetune.py -s -c configs/finetune.yaml
+```
+
+The `-s` flag triggers a sweep over all hyperparameter combinations specified in the YAML file using `slurm`. To train unimodal models, use `--modality=image`. To train on the whole dataset use `--train-shot=-1` and for few-shot training, set `--train-shot` to the respective shot. While the code currently freezes the language model and trains the pretrained vision backbone and shared head, one can also freeze the vision backbone and only train the shared head to conduct linear probe experiments (as reported in our paper). After training, results are saved in the `experiments/` directory with logs and checkpoints. 
 
 ---
 
 ### (B) MultiBench Benchmarks (Self-Supervised Signal)
 
-Training hyperparameters are controlled via YAML configuration files. Edit `MultiBench/configs/train.yaml` to run sweep over parameters. To directly run using command line arguments, use 
+For a single experiment, run directly with command-line arguments:
 
 ```python
 python main.py \
@@ -159,6 +166,14 @@ python main.py \
     --pos_learnable
 ```
 
+For hyperparameter search, edit `configs/train.yaml` to specify sweep parameters, then run:
+
+```bash
+python main.py -s -c configs/train.yaml -o
+```
+
+The `-s` flag enables sweeping over all hyperparameter combinations defined in the YAML configuration using slurm.
+
 ---
 ## Results
 
@@ -168,17 +183,7 @@ python main.py \
 
 ## Tips and Best Practices
 
-#### For Vision-Language Experiments
-
-- Start with pre-extracted features for faster iteration during hyperparameter tuning
-- Try different alpha values (0.0, 0.3, 0.5, 0.7, 1.0, 1.5) to find optimal cross-modal weighting
-- Use GPT-3 descriptors (`text_type='gpt3_cupl'`) for better text representations
-- Conduct rigourous hyperparameter testing over learning rate, weight decay etc. to get optimal results. 
-
-#### For MultiBench Experiments
-
-- Try different `step_k` values: -1 (for jointly training on $X$ and $Y$ from the first step), 10, 20 etc to first warm start the model on $Y$ alone for `step_k` epochs and then jointly training on $X$ and $Y$ (without supervision)
-- Adjust `zdim` based on dataset complexity: smaller datasets need smaller zdim to avoid overfitting
+For both sets of experiment,starting with pre-extracted features enables faster iteration during hyperparameter tuning. In vision–language experiments, we explore a range of cross-modal weighting coefficients ($\alpha \in {0.0, 0.3, 0.5, 0.7, 1.0, 1.5}$) to identify the optimal balance between modalities and use GPT-3 descriptors (`text_type='gpt3_cupl'`) for stronger text representations. Extensive hyperparameter sweeps over learning rate, weight decay, and related parameters are conducted to ensure optimal performance. For MultiBench experiments, we vary `step_k` values, e.g., $-1$ (jointly training on $X$ and $Y$ from the start), $10$, or $20$ etc. to first warm-start the model on $Y$ alone for `step_k` epochs before co-training on $X$ and $Y$ (without supervision). Tune the latent dimension zdim according to dataset complexity, with smaller datasets using smaller values to prevent overfitting.
 
 ---
 
