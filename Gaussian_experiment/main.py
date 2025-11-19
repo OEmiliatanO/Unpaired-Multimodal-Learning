@@ -4,76 +4,23 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 import numpy as np
+from dataset import UnpairedDataset
+from tqdm import tqdm
 
-torch.manual_seed(42)
-np.random.seed(42)
+SEED = 42
 
 DIM_C = 10
 DIM_X = 5
 DIM_Y = 5
 DIM_OBS = 50
-NOISE_STD = 0.3
 
-N_TOTAL = 10000
-N_HALF = 5000
-N_VAL = 1000
-BATCH_SIZE = 64
-NUM_STEPS = 500 
+BATCH_SIZE = 512
+NUM_STEPS = 1000000
 LR = 1e-3
 EVAL_EVERY = 5
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
-
-
-A_c = torch.randn(DIM_OBS, DIM_C)
-A_x = torch.randn(DIM_OBS, DIM_X)
-B_c = torch.randn(DIM_OBS, DIM_C)
-B_y = torch.randn(DIM_OBS, DIM_Y)
-
-attenuation = torch.full((DIM_C,), 0.05)
-attenuation[0] = 1.0 # 10% of 10 is 1 component
-
-
-def generate_data(num_samples, attenuate_x=True):
-    theta_c = torch.randn(num_samples, DIM_C)
-    theta_x = torch.randn(num_samples, DIM_X)
-    theta_y = torch.randn(num_samples, DIM_Y)
-
-    noise_x = torch.randn(num_samples, DIM_OBS) * NOISE_STD
-    noise_y = torch.randn(num_samples, DIM_OBS) * NOISE_STD
-
-    if attenuate_x:
-        theta_c_x = theta_c * attenuation
-    else:
-        theta_c_x = theta_c
-        
-    # X = Ac * (W * theta_c) + Ax * theta_x + eps_X
-    data_x = (theta_c_x @ A_c.T) + (theta_x @ A_x.T) + noise_x
-
-    # Y = Bc * theta_c + By * theta_y + eps_Y
-    data_y = (theta_c @ B_c.T) + (theta_y @ B_y.T) + noise_y
-
-    return {'x': data_x, 'y': data_y}
-
-
-class UnpairedDataset(Dataset):
-    def __init__(self, data_x, data_y):
-        self.data_x = data_x
-        self.data_y = data_y
-        self.len_x = len(data_x)
-        self.len_y = len(data_y)
-        self.length = max(self.len_x, self.len_y)
-
-    def __len__(self):
-        return self.length
-
-    def __getitem__(self, idx):
-        idx_x = idx % self.len_x
-        idx_y = idx % self.len_y
-        
-        return {'x': self.data_x[idx_x], 'y': self.data_y[idx_y]}
-
 
 class SharedAutoencoder(nn.Module):
     def __init__(self, dim_obs=DIM_OBS, dim_common=128, dim_latent=DIM_C):
@@ -127,7 +74,8 @@ def train_model_steps(model, data_loader, optimizer, num_steps, val_data_x, mode
     val_losses = []
     steps = []
 
-    for step in range(num_steps):
+    tqdm_range = tqdm(range(num_steps), desc=f"Training ({mode})")
+    for step in tqdm_range:
         try:
             batch = next(data_iter)
         except StopIteration:
@@ -159,16 +107,13 @@ def train_model_steps(model, data_loader, optimizer, num_steps, val_data_x, mode
             model.train()
             
             if (step + 1) % 100 == 0:
-                print(f"Step [{step + 1}/{num_steps}], Mode: {mode}, Val Recon Error X: {val_loss.item():.4f}")
+                tqdm_range.set_description(f"Training ({mode}), Val Loss: {val_loss.item():.6f}")
 
     return steps, val_losses
 
-
-
-print("Generating data...")
-data_x_only_train = generate_data(N_TOTAL, attenuate_x=True)['x']
-unpaired_train_data = generate_data(N_HALF, attenuate_x=True)
-val_data = generate_data(N_VAL, attenuate_x=False)
+data_x_only_train = torch.load("data/data_x_only_train.pt")
+unpaired_train_data = torch.load("data/unpaired_train_data.pt")
+val_data = torch.load("data/val_data.pt")
 val_data_x = val_data['x'].to(device)
 
 dataset_x_only = TensorDataset(data_x_only_train)
@@ -178,6 +123,8 @@ dataset_unpaired = UnpairedDataset(unpaired_train_data['x'], unpaired_train_data
 loader_unpaired = DataLoader(dataset_unpaired, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
 
 
+torch.manual_seed(SEED)
+np.random.seed(SEED)
 print("\nRunning Experiment 1: X-data only")
 model_x_only = SharedAutoencoder().to(device)
 optimizer_x_only = optim.Adam(model_x_only.parameters(), lr=LR)
@@ -185,6 +132,11 @@ steps_x, losses_x = train_model_steps(
     model_x_only, loader_x_only, optimizer_x_only, NUM_STEPS, val_data_x, mode='x_only'
 )
 
+print("Saved model for X-data only experiment.")
+torch.save(model_x_only.state_dict(), "model/model_x_only.pth")
+
+torch.manual_seed(SEED)
+np.random.seed(SEED)
 print("\nRunning Experiment 2: Unpaired (X + Y)-data")
 model_unpaired = SharedAutoencoder().to(device)
 optimizer_unpaired = optim.Adam(model_unpaired.parameters(), lr=LR)
@@ -192,15 +144,18 @@ steps_unpaired, losses_unpaired = train_model_steps(
     model_unpaired, loader_unpaired, optimizer_unpaired, NUM_STEPS, val_data_x, mode='unpaired'
 )
 
+print("Saved model for Unpaired (X + Y)-data experiment.")
+torch.save(model_unpaired.state_dict(), "model/model_unpaired.pth")
+
 print("\nPlotting results...")
 plt.figure(figsize=(10, 6))
 plt.plot(steps_x, losses_x, label="X-data only", color="pink", linewidth=2)
 plt.plot(steps_unpaired, losses_unpaired, label="Unpaired (X + Y)-data", color="turquoise", linewidth=2)
 
-plt.title("Gaussian Experiment (Replication of Fig. 39)")
+plt.title(f"Gaussian Experiment batch size = {BATCH_SIZE}")
 plt.xlabel("Training Steps")
 plt.ylabel("Reconstruction Error on X")
 plt.legend()
 plt.grid(True, linestyle='--')
 plt.ylim(bottom=min(min(losses_x), min(losses_unpaired)) * 0.95)
-plt.show()
+plt.savefig("result.png")
