@@ -288,6 +288,14 @@ def get_dataloader(
     """
     with open(filepath, "rb") as f:
         alldata = pickle.load(f)
+    """
+    the data is stored in a dictionary with keys: 'train', 'valid', 'test'
+    each key maps to another dictionary with keys: 'vision', 'audio', 'text', 'labels', 'id'
+    each of these map to numpy arrays of shape (num_samples, seq_len, feature_dim) for vision, audio, text
+    and (num_samples, 1) for labels and id
+    e.g., alldata['train']['vision'] is a numpy array of shape (num_train_samples, seq_len, vision_feature_dim)
+    and alldata['train']['labels'] is a numpy array of shape (num_train_samples, 1)
+    """
 
     processed_dataset = {'train': {}, 'test': {}, 'valid': {}}
     alldata['train'] = drop_entry(alldata['train'])
