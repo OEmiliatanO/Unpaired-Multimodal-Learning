@@ -21,8 +21,10 @@ from itertools import product
 import argparse
 import yaml
 import warnings
-warnings.filterwarnings("ignore")
+from tqdm import trange
+import wandb
 
+warnings.filterwarnings("ignore")
 
 EVAL_FREQ = 100 # Evaluate on val set per 100 iterations (for early stopping)
 FLAG = 0  # runs despite an existing experiments directory if FLAG is set to 1. 
@@ -65,13 +67,13 @@ def savedir(outdir, dataset, encoder, train_shot, seed, text_type, text_shots, i
         text_name += f"_n_{text_shots}" 
     image_name = f"image_{image_augmentation}{custom_name}"
     mod_name = f"finetune-{text_name}-{image_name}" if mode == 'crossmodal' else f"finetune-{image_name}" if mode == 'image' else text_name
-    mod_name = f'{mod_name}-alpha_{alpha}' if (alpha > 0 and mode == 'crossmodal') else mod_name
+    mod_name = f'{mod_name}-alpha_{alpha}'
     mod_name = f"{mod_name}-text_bs_{text_bs}" if text_bs > 0 else mod_name
     return os.path.join(outdir, benchname, encoder.replace("/", "-"), mod_name, init_mode)
 
 
-def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, scheduler, device="cuda", max_iters=1000, alpha=1.0, eval_freq=100, patience = 5):
-    out = {'iter': None, 'val_acc': None, 'model': None, 'val_classwise': None, 'val_loss': None}
+def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, scheduler, device="cuda", max_iters=1000, alpha=1.0, eval_freq=100, patience = 5, logger=None):
+    out = {'iter': None, 'val_acc': None, 'model': None, 'val_classwise': None, 'val_loss': None, 'model_records': []}
     model.train()
     assert image_loader is not None or text_loader is not None, "At least one of the loaders should be provided"
     
@@ -80,6 +82,7 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
     no_improve = 0
 
     img_alpha = 1.0
+    progress_bar = trange(max_iters, desc="Training")
     for i in range(max_iters):
         labels, modality_flags = [], []
         if image_iter is not None:
@@ -102,8 +105,8 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
         image_logits, text_logits = model(raw_images, text_features)
         image_indices = modality_flags == 1
         text_indices = modality_flags == 0
-        image_loss = torch.nn.functional.cross_entropy(image_logits, labels[image_indices]) if image_indices.any() else 0.0
-        text_loss = torch.nn.functional.cross_entropy(text_logits, labels[text_indices]) if text_indices.any() else 0.0
+        image_loss = torch.nn.functional.cross_entropy(image_logits, labels[image_indices]) if image_indices.any() else torch.tensor(0.0)
+        text_loss = torch.nn.functional.cross_entropy(text_logits, labels[text_indices]) if text_indices.any() else torch.tensor(0.0)
         loss = img_alpha * image_loss + alpha * text_loss
 
         loss.backward()
@@ -112,8 +115,13 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
 
         img_acc = (torch.argmax(image_logits, dim=1) == labels[image_indices]).float().mean().item() if image_indices.any() else 0.0
         text_acc = (torch.argmax(text_logits, dim=1) == labels[text_indices]).float().mean().item() if text_indices.any() else 0.0
+        if logger is not None:
+            logger.log({'train/image_loss': image_loss.item(), 'train/text_loss': text_loss.item(),
+                        'train/image_acc': img_acc, 'train/text_acc': text_acc, 'train/lr': scheduler.get_last_lr()[0], 'iter': i})
+        progress_bar.update(1)
 
         if i % eval_freq == 0:
+            out['model_records'].append(deepcopy(model.state_dict()))
             val_loss, val_acc = validate(model, val_loader, device=device)
             testlog = ''
             if test_loader is not None:
@@ -123,18 +131,22 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
                 out['iter'] = i
                 out['val_acc'] = val_acc
                 out['val_loss'] = val_loss
-                out['model'] = deepcopy(model.state_dict()) 
+                out['model'] = deepcopy(model.state_dict())
                 no_improve = 0
             else:
                 no_improve += 1
             
-            print(f"Iter {i} | Img Loss: {image_loss:.4f} | Text Loss: {text_loss:.4f} | Img Acc: {img_acc:.4f} | Text Acc: {text_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc {val_acc:.4f}{testlog} | Count {no_improve}/{patience}")
+            if logger is not None:
+                logger.log({'val/val_loss': val_loss, 'val/val_acc': val_acc, 'iter': i})
+            progress_bar.set_description(f"Iter {i} | Img Loss: {image_loss:.4f} | Text Loss: {text_loss:.4f} | Img Acc: {img_acc:.4f} | Text Acc: {text_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc {val_acc:.4f}{testlog} | Count {no_improve}/{patience}")
             if no_improve >= patience:
                 print(f"=> Early stopping at Iter {i}")
                 break
             
     model.load_state_dict(out['model'])
     val_loss, val_acc = validate(model, val_loader, device=device)
+    if logger is not None:
+        logger.log({'val/best_val_loss': val_loss, 'val/best_val_acc': val_acc, 'iter': out['iter']})
     print(f"=> Best Val Loss {val_loss:.4f}, Val Acc {val_acc:.4f} at Iter {out['iter']}")
     return out
 
@@ -160,8 +172,23 @@ def validate(model, val_loader, device="cuda"):
 
     return val_loss, val_acc
 
+def setup_wandb_logger(hparams, args):
+    config = hparams.copy()
+    config['dataset'] = args.dataset
+    config['vision_model'] = args.vision_model
+    config['language_model'] = args.language_model
+    config['clip_encoder'] = args.clip_encoder
+    config['modality'] = args.modality
+    config['train_shot'] = args.train_shot
+    config['text_type'] = args.text_type
+    config['text_shot'] = args.text_shot
+    config['alpha'] = args.alpha
+    wandb_log = wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.dataset, args.modality], config=config, reinit=True)
+    return wandb_log
 
 def setup(datasets, hparams, args):
+    wandb_log = setup_wandb_logger(hparams, args)
+
     device = args.device
     ckpt_dir = os.path.join(args.savepath, hparam_str(hparams['optim'], hparams['lr'], hparams['weight_decay'], hparams['batch_size'], hparams['max_iter'],
                                                        hparams['dropout'], hparams['learnable_temp']))
@@ -169,13 +196,15 @@ def setup(datasets, hparams, args):
     test_path = os.path.join(ckpt_dir, 'test_result.pth')
     if os.path.exists(test_path) and (not FLAG):
         print(f"=> Skipping {ckpt_dir} as it already exists!")
-        return torch.load(test_path)
+        return torch.load(test_path, map_location=device)
     print(f"=> Setting up {ckpt_dir}")
     
     if args.use_clip:
         model = UMLClip(args.clip_encoder, args.nclasses, logit_scale_init=args.logit, bias=False, learnable_temp = hparams['learnable_temp']).to(device)                
     else:
         model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'])
+        # for fairness
+        # model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'])
 
     # Initialize shared head with text embedding weights only when using both modalities
     if args.classifier_init == 'zeroshot' and args.modality == 'crossmodal':
@@ -185,8 +214,8 @@ def setup(datasets, hparams, args):
     optimizer = build_optimizer(model.parameters(), hparams['optim'], hparams['lr'], hparams['weight_decay'])
     scheduler = build_lr_scheduler(optimizer, hparams['lr_scheduler'], hparams['warmup_iter'], hparams['max_iter'], warmup_type=hparams['warmup_type'], warmup_lr=hparams['warmup_min_lr'])
 
-    image_loader = DataLoader(DatasetWrapper(datasets['img_tr_ds'], transform=datasets["tr_transform"]), batch_size=hparams['batch_size'], shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=True)
-    text_loader = DataLoader(datasets['text_ds'], batch_size=hparams['batch_size'], shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=True)
+    image_loader = DataLoader(DatasetWrapper(datasets['img_tr_ds'], transform=datasets["tr_transform"]), batch_size=hparams['batch_size'], shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=False)
+    text_loader = DataLoader(datasets['text_ds'], batch_size=hparams['batch_size'], shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=False)
 
     if args.modality == 'image':
         text_loader = None
@@ -201,10 +230,11 @@ def setup(datasets, hparams, args):
 
     result_dict = train(model, image_loader, text_loader, val_loader, 
                         test_loader if args.eval_test else None, optimizer, scheduler, device=device, 
-                        max_iters=hparams['max_iter'], alpha=args.alpha, eval_freq=EVAL_FREQ, patience=hparams['patience'])
+                        max_iters=hparams['max_iter'], alpha=args.alpha, eval_freq=EVAL_FREQ, patience=hparams['patience'], logger = wandb_log)
     
     test_loss, test_acc = validate(model, test_loader, device=device)
-    test_dict = {'test_acc': test_acc, 'val_acc': result_dict['val_acc'], 'model': result_dict['model'], 'iter': result_dict['iter']}
+    wandb_log.log({'test/test_loss': test_loss, 'test/test_acc': test_acc})
+    test_dict = {'test_acc': test_acc, 'val_acc': result_dict['val_acc'], 'model': result_dict['model'], 'iter': result_dict['iter'], 'model_records': result_dict['model_records']}
     print(f"=> Test Acc: {test_acc:.4f}")
     if not FLAG or args.overwrite:
         print(f"=> Saving Test Results for hparams to {test_path}")
@@ -220,7 +250,7 @@ def sweep(datasets, hyperparams, args):
     for v in values:
         total *= len(v)
 
-    results = {'test_acc': [], 'val_acc': [], 'hparams': []}
+    results = {'test_acc': [], 'val_acc': [], 'hparams': [], 'model_records': []}
     
     # Iterate over all combinations of hyperparameter values.
     best_val_acc = 0
@@ -229,13 +259,18 @@ def sweep(datasets, hyperparams, args):
     for idx, combination in enumerate(product(*values)):
         combo_dict = dict(zip(keys, combination))
         print(f"=> Running {idx + 1}/{total}: {combo_dict}")
+        print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
         out = setup(datasets, combo_dict, args)
-        results['test_acc'].append(out['test_acc']); results['val_acc'].append(out['val_acc']); results['hparams'].append(combo_dict)
+        results['test_acc'].append(out['test_acc']); results['val_acc'].append(out['val_acc']); results['hparams'].append(combo_dict); results['model_records'].append(out['model_records'])
         if out['val_acc'] > best_val_acc:
             best_val_acc = out['val_acc']
             best_hparams = combo_dict
             best_test_acc = out['test_acc']
             print(f"=> New Best Val Acc: {best_val_acc:.4f} | Test Acc: {best_test_acc:.4f}")
+        print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
+        del out
+        print(f"=> Released memory after deleting test results.")
+        print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
         print(f"=> Best Val Acc (so far): {best_val_acc:.4f} | Test Acc (corresponding): {best_test_acc:.4f}")
         print(f"=> Best Hyperparameters (so far): {best_hparams}")
         print('--------------------------------------------------------\n')
@@ -262,7 +297,7 @@ def main(args):
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
-    args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    args.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     args.use_clip = args.vision_model=='' and args.language_model==''
 
     encoder_name = args.clip_encoder if args.use_clip else f'{args.vision_model}-{args.language_model}'
@@ -279,7 +314,7 @@ def main(args):
     # Load Text Features
     text_encoder_name = args.clip_encoder if args.use_clip else f'{args.language_model}'
     text_path = text_outdir(args.feature_dir, text_encoder_name, args.dataset, args.text_type)
-    text_features = torch.load(text_path)
+    text_features = torch.load(text_path, map_location='cpu')
     text_ds = TextTensorDataset(text_features['features'], text_features['labels'], text_features['eot_indices'], n_shots=int(args.text_shot) if (args.text_shot!='average' and args.text_shot is not None) else args.text_shot)
 
     # Load Raw Images
@@ -308,7 +343,7 @@ def main(args):
 
 if __name__ == "__main__":
     outer_parser = argparse.ArgumentParser(description="Synthetic Search Experiment")
-    outer_parser.add_argument("-c", "--config", type=str, default="config.json", help="Configuration file")
+    outer_parser.add_argument("-c", "--config", type=str, default="config.yaml", help="Configuration file")
     outer_parser.add_argument("-s", "--slurm", action="store_true", help="Launched with slurm")
     outer_parser.add_argument("-d", "--debug", action="store_true", help="Debug mode")
     outer_parser.add_argument("-f", "--flag", action="store_true", help="Run despite existing experiments directory")
