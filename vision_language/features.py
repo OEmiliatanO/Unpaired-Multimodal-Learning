@@ -256,7 +256,7 @@ def main(args):
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
-    args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    args.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     if args.dataset not in IMAGENET_TESTSETS:
         datasets = get_few_shot_benchmark(args.data_dir, args.indices_dir, args.dataset, args.train_shot, args.seed)
         print(f'=> Dataset sizes: train: {len(datasets["train"])}, val: {len(datasets["val"])}, test: {len(datasets["test"])}')
@@ -289,7 +289,7 @@ def main(args):
 
 if __name__ == "__main__":
     outer_parser = argparse.ArgumentParser(description="Feature Extraction")
-    outer_parser.add_argument("-c", "--config", type=str, default="config.json", help="Configuration file")
+    outer_parser.add_argument("-c", "--config", type=str, default="features.yaml", help="Configuration file")
     outer_parser.add_argument("-s", "--slurm", action="store_true", help="Launched with slurm")
     outer_parser.add_argument("-d", "--debug", action="store_true", help="Debug mode")
     outer_parser.add_argument("-o", "--overwrite", action="store_true", help="Overwrite existing features")
