@@ -49,6 +49,7 @@ class UML(torch.nn.Module):
         self.img_proj = None  
 
         self.vision_model = create_model(vision_model, pretrained=True, img_size=224)        
+        print(f"=> Using vision model: {vision_model}, trainable parameters: {sum(p.numel() for p in self.vision_model.parameters() if p.requires_grad)}")
         self.shared_dim = self.vision_model.num_features   
         if text_indim > 0:
             self.img_proj = torch.nn.Linear(self.vision_model.num_features, text_indim, bias=bias) 
@@ -66,6 +67,11 @@ class UML(torch.nn.Module):
             txt_logits = self.head(text_features) * self.txt_scale
             return img_logits, txt_logits
         return img_logits, None
+    
+    def extract_features(self, images):
+        images = self.vision_model.forward(images)
+        images = self.img_proj(images) if self.img_proj is not None else images
+        return images
 
     def zero_shot_init(self, zeroshot_dataset):
         print("=> Initializing head with zero-shot weights")
