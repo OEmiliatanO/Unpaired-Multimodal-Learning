@@ -2,8 +2,8 @@ HYPER_DICT = {
     # for full finetuning experiments
     'full_ds_full_model_finetune': {
         'optim': "adamw",
-        'lr': [5.0e-5, 0.001, 0.0001],
-        'weight_decay': [0.0],
+        'lr': [5e-05],
+        'weight_decay': [0.0, 0.01, 0.001],
         'lr_scheduler': "cosine",
         'batch_size': [64],
         'max_iter': [12800],
@@ -35,7 +35,7 @@ HYPER_DICT = {
         'lr': [0.001, 0.0001],
         'weight_decay': [0.0, 0.01, 0.001],
         'lr_scheduler': "cosine",
-        'batch_size': [32],
+        'batch_size': [8, 32],
         'max_iter': [12800],
         'warmup_iter': 50,
         'warmup_type': "linear",
