@@ -347,6 +347,7 @@ def main(args):
 
     hyperparams = HYPER_DICT[args.hyperparams]
     results, best_val_acc, best_test_acc = sweep(datasets, hyperparams, args)
+    del datasets
     print("Done!")
     return results, best_val_acc, best_test_acc
 
