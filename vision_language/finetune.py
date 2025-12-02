@@ -211,7 +211,7 @@ def setup(datasets, hparams, args):
     else:
         # model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
         # for fairness
-        model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'])
+        model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False)
 
     print(f"=> UML trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
