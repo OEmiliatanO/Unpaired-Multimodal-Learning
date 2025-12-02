@@ -43,13 +43,23 @@ class UML(torch.nn.Module):
                  num_classes, 
                  bias=False, 
                  learnable_temp=False,
+                 freeze_backbone=False
                  ):
         super().__init__()
         self.num_classes = num_classes
         self.img_proj = None  
 
-        self.vision_model = create_model(vision_model, pretrained=True, img_size=224)        
-        print(f"=> Using vision model: {vision_model}, trainable parameters: {sum(p.numel() for p in self.vision_model.parameters() if p.requires_grad)}")
+        self.vision_model = create_model(vision_model, pretrained=True, img_size=224)
+        # If requested, freeze backbone parameters and set BatchNorm layers to eval
+        if freeze_backbone:
+            for p in self.vision_model.parameters():
+                p.requires_grad = False
+            import torch.nn as nn
+            for m in self.vision_model.modules():
+                if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.SyncBatchNorm)):
+                    m.eval()
+
+        print(f"=> Using vision model: {vision_model}, vision_model trainable parameters: {sum(p.numel() for p in self.vision_model.parameters() if p.requires_grad)}")
         self.shared_dim = self.vision_model.num_features   
         if text_indim > 0:
             self.img_proj = torch.nn.Linear(self.vision_model.num_features, text_indim, bias=bias) 
@@ -58,6 +68,11 @@ class UML(torch.nn.Module):
         self.head = torch.nn.Linear(self.shared_dim, num_classes, bias=bias)
         self.img_scale = torch.nn.Parameter(torch.tensor(1.0)) if learnable_temp else torch.tensor(1.0)
         self.txt_scale = torch.nn.Parameter(torch.tensor(1.0)) if learnable_temp else torch.tensor(1.0)
+        
+        # Report full model trainable parameter count (after potential freezing)
+        total_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"=> Model trainable params after init: {total_trainable}/{total_params}")
         
     def forward(self, images, text_features = None):
         images = self.vision_model.forward(images)
@@ -85,15 +100,28 @@ class UMLClip(torch.nn.Module):
                  logit_scale_init=torch.log(torch.tensor(1/0.07)),
                  bias=False, 
                  learnable_temp=False,
-                 ):
+                 freeze_backbone=False,
+                 ): 
         super().__init__()
         self.num_classes = num_classes
         self.img_proj = None  
         self.vision_model, _ = clip.load(clip_encoder, jit=False) 
+        # Optionally freeze CLIP image encoder weights and BN stats
+        if freeze_backbone:
+            for p in self.vision_model.parameters():
+                p.requires_grad = False
+            import torch.nn as nn
+            for m in self.vision_model.modules():
+                if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.SyncBatchNorm)):
+                    m.eval()
+
         self.shared_dim = self.vision_model.embed_dim
         self.head = torch.nn.Linear(self.shared_dim, num_classes, bias=bias)
         self.logit_scale = torch.tensor(logit_scale_init)  # fixed scale
         self.vision_model.float()
+        total_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"=> CLIP-model trainable params after init: {total_trainable}/{total_params}")
 
     def forward(self, images, text_features = None):
         images = self.vision_model.encode_image(images)

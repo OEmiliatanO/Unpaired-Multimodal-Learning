@@ -38,15 +38,18 @@ def fetch_next(loader, loader_iter):
     return batch, loader_iter
 
 def clip_outdim(model_name):
+    print("=> Loading CLIP model for dimension extraction:", model_name)
     model, _ = clip.load(model_name, jit=False)
     return model.embed_dim
 
 def vision_model_outdim(model_name):
+    print("=> Loading vision model for dimension extraction:", model_name)
     model = create_model(model_name, pretrained=True)
     assert model.num_classes == 0, "Vision model should not have a classification head"
     return model.num_features
 
 def language_model_outdim(model_name):
+    print("=> Loading language model for dimension extraction:", model_name)
     model = AutoModel.from_pretrained(model_name)
     return model.config.hidden_size
 
@@ -65,9 +68,9 @@ def savedir(outdir, dataset, encoder, train_shot, seed, text_type, text_shots, i
     text_name = f"text_{text_type}"
     if text_shots is not None:
         text_name += f"_n_{text_shots}" 
-    image_name = f"image_{image_augmentation}{custom_name}"
+    image_name = f"image_{image_augmentation}_{custom_name}"
     mod_name = f"finetune-{text_name}-{image_name}" if mode == 'crossmodal' else f"finetune-{image_name}" if mode == 'image' else text_name
-    mod_name = f'{mod_name}-alpha_{alpha}'
+    mod_name = f'{mod_name}-alpha_{alpha}' if mode == 'crossmodal' else mod_name
     mod_name = f"{mod_name}-text_bs_{text_bs}" if text_bs > 0 else mod_name
     return os.path.join(outdir, benchname, encoder.replace("/", "-"), mod_name, init_mode)
 
@@ -183,7 +186,11 @@ def setup_wandb_logger(hparams, args):
     config['text_type'] = args.text_type
     config['text_shot'] = args.text_shot
     config['alpha'] = args.alpha
-    wandb_log = wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.dataset, args.modality], config=config, reinit=True)
+    config['seed'] = args.seed
+    config['classifier_init'] = args.classifier_init
+    config['hyperparams'] = args.hyperparams
+    config['custom_name'] = args.custom_name
+    wandb_log = wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.dataset, args.modality, args.hyperparams], config=config, reinit="finish_previous")
     return wandb_log
 
 def setup(datasets, hparams, args):
@@ -200,11 +207,13 @@ def setup(datasets, hparams, args):
     print(f"=> Setting up {ckpt_dir}")
     
     if args.use_clip:
-        model = UMLClip(args.clip_encoder, args.nclasses, logit_scale_init=args.logit, bias=False, learnable_temp = hparams['learnable_temp']).to(device)                
+        model = UMLClip(args.clip_encoder, args.nclasses, logit_scale_init=args.logit, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)                
     else:
-        model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'])
+        # model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
         # for fairness
-        # model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'])
+        model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'])
+
+    print(f"=> UML trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
     # Initialize shared head with text embedding weights only when using both modalities
     if args.classifier_init == 'zeroshot' and args.modality == 'crossmodal':
@@ -314,6 +323,7 @@ def main(args):
     # Load Text Features
     text_encoder_name = args.clip_encoder if args.use_clip else f'{args.language_model}'
     text_path = text_outdir(args.feature_dir, text_encoder_name, args.dataset, args.text_type)
+    print(f"=> Loading text features from: {text_path}")
     text_features = torch.load(text_path, map_location='cpu')
     text_ds = TextTensorDataset(text_features['features'], text_features['labels'], text_features['eot_indices'], n_shots=int(args.text_shot) if (args.text_shot!='average' and args.text_shot is not None) else args.text_shot)
 
