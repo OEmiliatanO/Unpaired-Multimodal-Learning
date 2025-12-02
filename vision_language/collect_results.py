@@ -133,14 +133,19 @@ if __name__ == "__main__":
 
     # Specify datasets, encoders, shots etc. across which to collect results
     experiments_dir = "experiments"
-    datasets = ['fgvc_aircraft']
-    text_shots = ['average', 1, 5, 15]
-    alphas = [0.1, 0.5, 1.0, 1.5, 2.0]
+    datasets = ['fgvc_aircraft', 'food101', 'stanford_cars', 'oxford_pets', 'caltech101', 'ucf101', 'oxford_flowers', 'dtd']
+    text_shots = ['average']
+    alphas = [0., 1.]
     seeds = [1, 2, 3]
     train_shots = [-1]
-    init_types = ['random', 'zeroshot']
-    modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop-alpha_{a}/' for k in text_shots for a in alphas]
-    modality_types.append('finetune-image_crop')
+    init_types = ['zeroshot']
+    custom_name = 'full_finetune'
+    if custom_name != '':
+        modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop_{custom_name}-alpha_{a}/' for k in text_shots for a in alphas]
+        modality_types.append(f'finetune-image_crop_{custom_name}')
+    else:
+        modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop-alpha_{a}/' for k in text_shots for a in alphas]
+        modality_types.append('finetune-image_crop')
     encoders_list = ['vit_small_patch14_dinov2.lvd142m-openlm-research-open_llama_3b_v2']
     
     summary = collect_results(
