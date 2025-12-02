@@ -180,7 +180,7 @@ def get_few_shot_benchmark(data_dir,
                            train_shot,
                            seed):
     # Check if the dataset is supported
-    assert dataset in dataset_classes
+    assert dataset in dataset_classes, f"Dataset {dataset} is not supported."
     if train_shot!=-1:
         few_shot_index_file = os.path.join(
             indices_dir, dataset, f"{get_few_shot_setup_name(train_shot, seed)}.json")
@@ -188,6 +188,7 @@ def get_few_shot_benchmark(data_dir,
         few_shot_dataset = load_json(few_shot_index_file)
     else:
         print("=> Using full dataset for feature extraction")
+    print(f"=> Loading benchmark dataset: {data_dir}, {dataset}")
     benchmark = dataset_classes[dataset](data_dir)
     
     return {
