@@ -72,7 +72,7 @@ def savedir(outdir, dataset, encoder, train_shot, seed, text_type, text_shots, i
     mod_name = f"finetune-{text_name}-{image_name}" if mode == 'crossmodal' else f"finetune-{image_name}" if mode == 'image' else text_name
     mod_name = f'{mod_name}-alpha_{alpha}' if mode == 'crossmodal' else mod_name
     mod_name = f"{mod_name}-text_bs_{text_bs}" if text_bs > 0 else mod_name
-    mod_name = f"{mod_name}-equal_param_{args.equal_param}" if args is not None else mod_name
+    mod_name = f"{mod_name}-equal_param_{args.equal_param}" if args is not None and mode != 'crossmodal' else mod_name
     return os.path.join(outdir, benchname, encoder.replace("/", "-"), mod_name, init_mode)
 
 

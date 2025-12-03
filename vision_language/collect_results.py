@@ -143,13 +143,11 @@ if __name__ == "__main__":
     custom_name = 'full_finetune'
     equal_param = [False, True]
     if custom_name != '':
-        modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop_{custom_name}-alpha_{a}-equal_param_{e}/' for k in text_shots for a in alphas for e in equal_param]
-        # modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop_{custom_name}-alpha_{a}/' for k in text_shots for a in alphas]
+        modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop_{custom_name}-alpha_{a}/' for k in text_shots for a in alphas]
         modality_types.extend([f'finetune-image_crop_{custom_name}-equal_param_{e}' for e in equal_param])
         # modality_types.append(f'finetune-image_crop_{custom_name}')
     else:
-        modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop-alpha_{a}-equal_param_{e}/' for k in text_shots for a in alphas for e in equal_param]
-        # modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop-alpha_{a}/' for k in text_shots for a in alphas]
+        modality_types = [f'finetune-text_gpt3_cupl_n_{k}-image_crop-alpha_{a}/' for k in text_shots for a in alphas]
         modality_types.extend([f'finetune-image_crop-equal_param_{e}' for e in equal_param])
         # modality_types.append(f'finetune-image_crop')
     encoders_list = ['vit_small_patch14_dinov2.lvd142m-openlm-research-open_llama_3b_v2']
