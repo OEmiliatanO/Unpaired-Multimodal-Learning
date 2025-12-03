@@ -63,7 +63,7 @@ def hparam_str(optim, lr, wd, batch_size, iters, dropout, learnable_temp):
     return base
 
 
-def savedir(outdir, dataset, encoder, train_shot, seed, text_type, text_shots, image_augmentation, mode, init_mode='zeroshot', alpha=0.0, text_bs=0, custom_name=''):
+def savedir(outdir, dataset, encoder, train_shot, seed, text_type, text_shots, image_augmentation, mode, init_mode='zeroshot', alpha=0.0, text_bs=0, custom_name='', args=None):
     benchname = '-'.join([dataset, get_few_shot_setup_name(train_shot, seed)])
     text_name = f"text_{text_type}"
     if text_shots is not None:
@@ -72,6 +72,7 @@ def savedir(outdir, dataset, encoder, train_shot, seed, text_type, text_shots, i
     mod_name = f"finetune-{text_name}-{image_name}" if mode == 'crossmodal' else f"finetune-{image_name}" if mode == 'image' else text_name
     mod_name = f'{mod_name}-alpha_{alpha}' if mode == 'crossmodal' else mod_name
     mod_name = f"{mod_name}-text_bs_{text_bs}" if text_bs > 0 else mod_name
+    mod_name = f"{mod_name}-equal_param_{args.equal_param}" if args is not None else mod_name
     return os.path.join(outdir, benchname, encoder.replace("/", "-"), mod_name, init_mode)
 
 
@@ -190,6 +191,7 @@ def setup_wandb_logger(hparams, args):
     config['classifier_init'] = args.classifier_init
     config['hyperparams'] = args.hyperparams
     config['custom_name'] = args.custom_name
+    config['equal_param'] = args.equal_param
     wandb_log = wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.dataset, args.modality, args.hyperparams], config=config, reinit="finish_previous")
     return wandb_log
 
@@ -209,9 +211,10 @@ def setup(datasets, hparams, args):
     if args.use_clip:
         model = UMLClip(args.clip_encoder, args.nclasses, logit_scale_init=args.logit, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)                
     else:
-        # model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
-        # for fairness
-        model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False)
+        if args.equal_param:
+            model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
+        else:
+            model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
 
     print(f"=> UML trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
@@ -313,7 +316,7 @@ def main(args):
     args.savepath = savedir(args.result_dir, args.dataset, encoder_name, args.train_shot, 
                             args.seed, args.text_type, args.text_shot, args.image_augmentation, 
                             args.modality, args.classifier_init, args.alpha, 
-                            args.text_batch_size if hasattr(args, 'text_batch_size') else 0, args.custom_name)
+                            args.text_batch_size if hasattr(args, 'text_batch_size') else 0, args.custom_name, args)
     makedirs(args.savepath)
 
     logfile = open(os.path.join(args.savepath, 'log.txt'), 'w')

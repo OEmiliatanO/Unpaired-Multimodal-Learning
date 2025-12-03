@@ -243,3 +243,9 @@ parser.add_argument(
     default=False,
     help='flip projection for linear head',
 )
+
+parser.add_argument(
+    '--equal_param',
+    type=bool,
+    default=False
+)
