@@ -136,7 +136,7 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
                 out['iter'] = i
                 out['val_acc'] = val_acc
                 out['val_loss'] = val_loss
-                out['model'] = deepcopy(model.state_dict())
+                out['model'] = state_dict_cpu
                 no_improve = 0
             else:
                 no_improve += 1
@@ -148,6 +148,9 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
                 print(f"=> Early stopping at Iter {i}")
                 break
             
+            print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
+
+    print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
     model.load_state_dict(out['model'])
     val_loss, val_acc = validate(model, val_loader, device=device)
     if logger is not None:
@@ -283,9 +286,6 @@ def sweep(datasets, hyperparams, args):
             best_hparams = combo_dict
             best_test_acc = out['test_acc']
             print(f"=> New Best Val Acc: {best_val_acc:.4f} | Test Acc: {best_test_acc:.4f}")
-        print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
-        del out
-        print(f"=> Released memory after deleting test results.")
         print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
         print(f"=> Best Val Acc (so far): {best_val_acc:.4f} | Test Acc (corresponding): {best_test_acc:.4f}")
         print(f"=> Best Hyperparameters (so far): {best_hparams}")
