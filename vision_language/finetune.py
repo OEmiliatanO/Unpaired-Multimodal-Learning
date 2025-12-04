@@ -125,7 +125,8 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
         progress_bar.update(1)
 
         if i % eval_freq == 0:
-            out['model_records'].append(deepcopy(model.state_dict()))
+            state_dict_cpu = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            out['model_records'].append(deepcopy(state_dict_cpu))
             val_loss, val_acc = validate(model, val_loader, device=device)
             testlog = ''
             if test_loader is not None:
@@ -163,6 +164,9 @@ def validate(model, val_loader, device="cuda"):
             image, image_label = batch['img'], batch['label']
             image, image_label = image.to(device), image_label.to(device)
             logits, _ = model(image)
+
+            logits = logits.detach().cpu()
+            image_label = image_label.cpu()
             pred = torch.argmax(logits, dim=1)
             batch_loss = torch.nn.functional.cross_entropy(logits, image_label)
             
