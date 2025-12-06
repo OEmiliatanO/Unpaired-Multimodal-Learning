@@ -147,8 +147,6 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
             if no_improve >= patience:
                 print(f"=> Early stopping at Iter {i}")
                 break
-            
-            print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
 
     print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
     model.load_state_dict(out['model'])
@@ -215,6 +213,7 @@ def setup(datasets, hparams, args):
         return torch.load(test_path, map_location=device)
     print(f"=> Setting up {ckpt_dir}")
     
+    print(f"before creating model: {torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
     if args.use_clip:
         model = UMLClip(args.clip_encoder, args.nclasses, logit_scale_init=args.logit, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)                
     else:
@@ -222,7 +221,7 @@ def setup(datasets, hparams, args):
             model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
         else:
             model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
-
+    print(f"after creating model: {torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
     print(f"=> UML trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
     # Initialize shared head with text embedding weights only when using both modalities
@@ -239,9 +238,11 @@ def setup(datasets, hparams, args):
     if args.modality == 'image':
         text_loader = None
         print("=> Running Unimodal: Image Only Model")
+        print(f"=> Text loader is set to {text_loader}")
     elif args.modality == 'text':
         image_loader = None
         print("=> Running Unimodal: Text Only Model")
+        print(f"=> Image loader is set to {image_loader}")
 
     val_loader = DataLoader(DatasetWrapper(datasets['img_val_ds'], transform=datasets["te_transform"]), batch_size=hparams['batch_size'], shuffle=False, num_workers=args.num_workers, pin_memory=True)
     test_loader = DataLoader(DatasetWrapper(datasets['img_te_ds'], transform=datasets["te_transform"]), batch_size=hparams['batch_size'], shuffle=False, num_workers=args.num_workers, pin_memory=True)
@@ -252,6 +253,7 @@ def setup(datasets, hparams, args):
                         max_iters=hparams['max_iter'], alpha=args.alpha, eval_freq=EVAL_FREQ, patience=hparams['patience'], logger = wandb_log)
     
     test_loss, test_acc = validate(model, test_loader, device=device)
+    del model
     wandb_log.log({'test/test_loss': test_loss, 'test/test_acc': test_acc})
     test_dict = {'test_acc': test_acc, 'val_acc': result_dict['val_acc'], 'model': result_dict['model'], 'iter': result_dict['iter'], 'model_records': result_dict['model_records']}
     print(f"=> Test Acc: {test_acc:.4f}")
@@ -310,8 +312,11 @@ def main(args):
         print("=> Setting fixed seed: {}".format(args.seed))
         set_random_seed(args.seed)
 
+    # reproducibility settings
     if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.enabled = True
 
     args.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     args.use_clip = args.vision_model=='' and args.language_model==''
