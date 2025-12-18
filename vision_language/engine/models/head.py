@@ -83,6 +83,7 @@ class UML(torch.nn.Module):
             return img_logits, txt_logits
         return img_logits, None
     
+    # Modification: add feature extraction method
     def extract_features(self, images):
         images = self.vision_model.forward(images)
         images = self.img_proj(images) if self.img_proj is not None else images

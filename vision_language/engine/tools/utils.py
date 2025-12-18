@@ -22,6 +22,7 @@ class Tee:
         for f in self.files:
             f.flush()
 
+# Modification: add torch.cuda.manual_seed for completeness
 def set_random_seed(seed):
     '''Set random seed for reproducibility.'''
     random.seed(seed)
