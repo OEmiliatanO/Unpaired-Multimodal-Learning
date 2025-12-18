@@ -72,11 +72,11 @@ def savedir(outdir, dataset, encoder, train_shot, seed, text_type, text_shots, i
     mod_name = f"finetune-{text_name}-{image_name}" if mode == 'crossmodal' else f"finetune-{image_name}" if mode == 'image' else text_name
     mod_name = f'{mod_name}-alpha_{alpha}' if mode == 'crossmodal' else mod_name
     mod_name = f"{mod_name}-text_bs_{text_bs}" if text_bs > 0 else mod_name
-    mod_name = f"{mod_name}-equal_param_{args.equal_param}" if args is not None and mode != 'crossmodal' else mod_name
+    mod_name = f"{mod_name}-common_dim_{args.common_dim}" if args is not None and mode != 'crossmodal' else mod_name
     return os.path.join(outdir, benchname, encoder.replace("/", "-"), mod_name, init_mode)
 
 
-def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, scheduler, device="cuda", max_iters=1000, alpha=1.0, eval_freq=100, patience = 5, logger=None):
+def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, scheduler, device="cuda", max_iters=1000, alpha=1.0, eval_freq=EVAL_FREQ, patience = 5, logger=None):
     out = {'iter': None, 'val_acc': None, 'model': None, 'val_classwise': None, 'val_loss': None, 'model_records': []}
     model.train()
     assert image_loader is not None or text_loader is not None, "At least one of the loaders should be provided"
@@ -125,8 +125,10 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
         progress_bar.update(1)
 
         if i % eval_freq == 0:
+            # Modification: store model states for analysis
             state_dict_cpu = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             out['model_records'].append(deepcopy(state_dict_cpu))
+
             val_loss, val_acc = validate(model, val_loader, device=device)
             testlog = ''
             if test_loader is not None:
@@ -148,7 +150,7 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
                 print(f"=> Early stopping at Iter {i}")
                 break
 
-    print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
+    print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated after training")
     model.load_state_dict(out['model'])
     val_loss, val_acc = validate(model, val_loader, device=device)
     if logger is not None:
@@ -166,6 +168,7 @@ def validate(model, val_loader, device="cuda"):
             image, image_label = image.to(device), image_label.to(device)
             logits, _ = model(image)
 
+            # Modification: move to cpu to prevent OOM
             logits = logits.detach().cpu()
             image_label = image_label.cpu()
             pred = torch.argmax(logits, dim=1)
@@ -181,22 +184,9 @@ def validate(model, val_loader, device="cuda"):
 
     return val_loss, val_acc
 
+# Modification: setup wandb logger
 def setup_wandb_logger(hparams, args):
-    config = hparams.copy()
-    config['dataset'] = args.dataset
-    config['vision_model'] = args.vision_model
-    config['language_model'] = args.language_model
-    config['clip_encoder'] = args.clip_encoder
-    config['modality'] = args.modality
-    config['train_shot'] = args.train_shot
-    config['text_type'] = args.text_type
-    config['text_shot'] = args.text_shot
-    config['alpha'] = args.alpha
-    config['seed'] = args.seed
-    config['classifier_init'] = args.classifier_init
-    config['hyperparams'] = args.hyperparams
-    config['custom_name'] = args.custom_name
-    config['equal_param'] = args.equal_param
+    config = {**vars(args), **hparams.copy()}
     wandb_log = wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.dataset, args.modality, args.hyperparams], config=config, reinit="finish_previous")
     return wandb_log
 
@@ -213,25 +203,40 @@ def setup(datasets, hparams, args):
         return torch.load(test_path, map_location=device)
     print(f"=> Setting up {ckpt_dir}")
     
-    print(f"before creating model: {torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
+    print(f"Before creating model: {torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
     if args.use_clip:
         model = UMLClip(args.clip_encoder, args.nclasses, logit_scale_init=args.logit, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)                
     else:
-        if args.equal_param:
+        # Modification (v2): 
+        # Replace equal_param with common_dim [0~3200] argument to control the common dimension of unimodal models
+        # Add freeze_backbone argument to control whether to freeze backbone during linear probing
+        if args.modality == 'crossmodal':
             model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
-        else:
-            model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
-    print(f"after creating model: {torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
+        else: # 'image'
+            model = UML(args.vision_model, args.common_dim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
+
+        # # Modification (v1): 
+        # # Add equal_param argument to control whether to use the same number of parameters as multimodal for unimodal models
+        # # Add freeze_backbone argument to control whether to freeze backbone during linear probing
+        # if args.equal_param:
+        #     # If using unimodal model, the model created here will have the same number of parameters as the multimodal model
+        #     model = UML(args.vision_model, args.text_indim, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
+        # else:
+        #     # This one is original model creation
+        #     model = UML(args.vision_model, args.text_indim if args.modality == 'crossmodal' else 0, args.nclasses, bias=False, learnable_temp = hparams['learnable_temp'], freeze_backbone=True if args.hyperparams == 'linear' else False).to(device)
     print(f"=> UML trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+    print(f"After creating model: {torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
 
     # Initialize shared head with text embedding weights only when using both modalities
-    if args.classifier_init == 'zeroshot' and args.modality == 'crossmodal':
+    # Modification: fix zero-shot initialization condition, when using image-only unimodal model with common_dim equal to text_indim
+    if args.classifier_init == 'zeroshot' and (args.modality == 'crossmodal' or (args.modality == 'image' and args.common_dim == args.text_indim)):
         model.zero_shot_init(datasets['text_ds'])
     model.to(device)
 
     optimizer = build_optimizer(model.parameters(), hparams['optim'], hparams['lr'], hparams['weight_decay'])
     scheduler = build_lr_scheduler(optimizer, hparams['lr_scheduler'], hparams['warmup_iter'], hparams['max_iter'], warmup_type=hparams['warmup_type'], warmup_lr=hparams['warmup_min_lr'])
 
+    # Modification: set drop_last to False
     image_loader = DataLoader(DatasetWrapper(datasets['img_tr_ds'], transform=datasets["tr_transform"]), batch_size=hparams['batch_size'], shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=False)
     text_loader = DataLoader(datasets['text_ds'], batch_size=hparams['batch_size'], shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=False)
 
@@ -253,11 +258,17 @@ def setup(datasets, hparams, args):
                         max_iters=hparams['max_iter'], alpha=args.alpha, eval_freq=EVAL_FREQ, patience=hparams['patience'], logger = wandb_log)
     
     test_loss, test_acc = validate(model, test_loader, device=device)
+    # Modification: prevent OOM
     del model
+
     wandb_log.log({'test/test_loss': test_loss, 'test/test_acc': test_acc})
-    test_dict = {'test_acc': test_acc, 'val_acc': result_dict['val_acc'], 'model': result_dict['model'], 'iter': result_dict['iter'], 'model_records': result_dict['model_records']}
+    test_dict = {'test_acc': test_acc, 'val_acc': result_dict['val_acc'], 'model': result_dict['model'], 'iter': result_dict['iter']}
     print(f"=> Test Acc: {test_acc:.4f}")
     if not FLAG or args.overwrite:
+        test_dir = os.path.dirname(test_path)
+        for i in range(len(result_dict['model_records'])):
+            record_path = os.path.join(test_dir, f'model_state_iter_{i * EVAL_FREQ}_{(len(result_dict['model_records'])-1) * EVAL_FREQ}.pth')
+            torch.save(result_dict['model_records'][i], record_path)
         print(f"=> Saving Test Results for hparams to {test_path}")
         torch.save(test_dict, test_path)
     return test_dict
@@ -280,15 +291,15 @@ def sweep(datasets, hyperparams, args):
     for idx, combination in enumerate(product(*values)):
         combo_dict = dict(zip(keys, combination))
         print(f"=> Running {idx + 1}/{total}: {combo_dict}")
-        print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
+        print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated before running {idx + 1}/{total}")
         out = setup(datasets, combo_dict, args)
-        results['test_acc'].append(out['test_acc']); results['val_acc'].append(out['val_acc']); results['hparams'].append(combo_dict); results['model_records'].append(out['model_records'])
+        results['test_acc'].append(out['test_acc']); results['val_acc'].append(out['val_acc']); results['hparams'].append(combo_dict); 
         if out['val_acc'] > best_val_acc:
             best_val_acc = out['val_acc']
             best_hparams = combo_dict
             best_test_acc = out['test_acc']
             print(f"=> New Best Val Acc: {best_val_acc:.4f} | Test Acc: {best_test_acc:.4f}")
-        print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated")
+        print(f"{torch.cuda.memory_allocated(0) / (1024 ** 3):.4f} GB allocated after running {idx + 1}/{total}")
         print(f"=> Best Val Acc (so far): {best_val_acc:.4f} | Test Acc (corresponding): {best_test_acc:.4f}")
         print(f"=> Best Hyperparameters (so far): {best_hparams}")
         print('--------------------------------------------------------\n')
@@ -312,10 +323,13 @@ def main(args):
         print("=> Setting fixed seed: {}".format(args.seed))
         set_random_seed(args.seed)
 
-    # reproducibility settings
+    # Modifications: reproducibility settings
+    # set torch.backends.cudnn.benchmark to False
+    # add torch.backends.cudnn.deterministic = True
+    # add torch.backends.cudnn.enabled = True
     if torch.cuda.is_available():
-        torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.enabled = True
 
     args.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -359,7 +373,9 @@ def main(args):
 
     hyperparams = HYPER_DICT[args.hyperparams]
     results, best_val_acc, best_test_acc = sweep(datasets, hyperparams, args)
+    # Modification: prevent OOM
     del datasets
+
     print("Done!")
     return results, best_val_acc, best_test_acc
 
