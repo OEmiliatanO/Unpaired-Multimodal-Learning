@@ -244,8 +244,17 @@ parser.add_argument(
     help='flip projection for linear head',
 )
 
+# Modification: add equal_param argument
+# parser.add_argument(
+#     '--equal_param',
+#     type=bool,
+#     default=False
+# )
+
+# Modification: add common_dim argument
 parser.add_argument(
-    '--equal_param',
-    type=bool,
-    default=False
+    '--common_dim',
+    type=int,
+    default=0,
+    help='common dimension',
 )
