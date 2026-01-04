@@ -307,9 +307,13 @@ def get_dataloader(
     for dataset in alldata:
         processed_dataset[dataset] = alldata[dataset]
 
+    # Modification: use generator for shuffling
+    if train_shuffle:
+        g_origin = torch.Generator()
+        g_origin.manual_seed(42)
     train = DataLoader(Affectdataset(processed_dataset['train'], flatten_time_series, task=task, max_pad=max_pad,
-    max_pad_num=max_seq_len, data_type=data_type, z_norm=z_norm, vision_norm=vision_norm), \
-                       shuffle=train_shuffle, num_workers=num_workers, batch_size=batch_size, \
+                            max_pad_num=max_seq_len, data_type=data_type, z_norm=z_norm, vision_norm=vision_norm), \
+                       shuffle=train_shuffle, generator=g_origin if train_shuffle else None, num_workers=num_workers, batch_size=batch_size, \
                        collate_fn=process)
     valid = DataLoader(Affectdataset(processed_dataset['valid'], flatten_time_series, task=task, max_pad=max_pad, max_pad_num=max_seq_len, data_type=data_type, z_norm=z_norm, vision_norm=vision_norm), \
                        shuffle=False, num_workers=num_workers, batch_size=batch_size, \
