@@ -35,6 +35,7 @@ def collect_results(
                                             # print(f"seek {seed_dir}")
                                             if not os.path.isdir(seed_dir):
                                                 continue
+                                            seed_results = []
                                             for seed in range(n_seeds):
                                                 seed_dir = os.path.join(
                                                     seed_dir, 
@@ -46,9 +47,19 @@ def collect_results(
                                                     continue
                                                 results = torch.load(results_path, weights_only=False)
                                                 # print(results)
+                                                seed_results.append(results)
+                                            results = {}
+                                            # average over seeds
+                                            for sr in seed_results:
+                                                for k, v in sr.items():
+                                                    if k not in results:
+                                                        results[k] = []
+                                                    results[k].append(v)
+                                            for k, v in results.items():
+                                                results[k] = torch.tensor(v).mean().item()
 
-                                                key = (dataset, modality_type, ay, ne, zd) # aggregate by these params
-                                                raw.setdefault(key, []).append(results)
+                                            key = (dataset, modality_type, ay, ne, zd) # aggregate by these params
+                                            raw.setdefault(key, []).append(results)
 
     # 2) Aggregate per key
     summary = {}
