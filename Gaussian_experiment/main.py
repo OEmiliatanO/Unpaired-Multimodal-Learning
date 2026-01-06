@@ -6,73 +6,35 @@ import matplotlib.pyplot as plt
 import numpy as np
 from dataset import UnpairedDataset
 from tqdm import tqdm
+from metrics import AlignmentMetrics
+import wandb
+import random
+import argparse
+from model import SharedAutoencoder
+from utils import make_reproducible
+from data import generate_data
+import yaml
+import os
+import sys
+from itertools import product
 
-SEED = 42
+def cka(feats_A, feats_B):
+	kwargs = {'kernel_metric': 'ip'}
+	return AlignmentMetrics.measure('cka', feats_A, feats_B, **kwargs)
 
-DIM_C = 10
-DIM_X = 5
-DIM_Y = 5
-DIM_OBS = 50
+def mknn(feats_A, feats_B):
+	kwargs = {'topk': 10}
+	return AlignmentMetrics.measure('mutual_knn', feats_A, feats_B, **kwargs)
 
-BATCH_SIZE = 512
-NUM_STEPS = 1000000
-LR = 1e-3
-EVAL_EVERY = 5
+EVAL_EVERY = 1
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-class SharedAutoencoder(nn.Module):
-    def __init__(self, dim_obs=DIM_OBS, dim_common=128, dim_latent=DIM_C):
-        super(SharedAutoencoder, self).__init__()
-        
-        self.in_head_x = nn.Linear(dim_obs, dim_common)
-        self.in_head_y = nn.Linear(dim_obs, dim_common)
-        
-        self.shared_encoder = nn.Sequential(
-            nn.Linear(dim_common, 64),
-            nn.ReLU(),
-            nn.Linear(64, dim_latent)
-        )
-        
-        self.shared_decoder = nn.Sequential(
-            nn.Linear(dim_latent, 64),
-            nn.ReLU(),
-            nn.Linear(64, dim_common)
-        )
-        
-        self.out_head_x = nn.Linear(dim_common, dim_obs)
-        self.out_head_y = nn.Linear(dim_common, dim_obs)
-        
-        self.loss_fn = nn.MSELoss()
-
-    def forward(self, x=None, y=None):
-        loss_x = torch.tensor(0.0, device=device)
-        loss_y = torch.tensor(0.0, device=device)
-        recon_x = None
-
-        if x is not None:
-            z_x = self.in_head_x(x)
-            latent_x = self.shared_encoder(z_x)
-            recon_common_x = self.shared_decoder(latent_x)
-            recon_x = self.out_head_x(recon_common_x)
-            loss_x = self.loss_fn(recon_x, x)
-
-        if y is not None:
-            z_y = self.in_head_y(y)
-            latent_y = self.shared_encoder(z_y)
-            recon_common_y = self.shared_decoder(latent_y)
-            recon_y = self.out_head_y(recon_common_y)
-            loss_y = self.loss_fn(recon_y, y)
-
-        return loss_x, loss_y, recon_x
-
-
-def train_model_steps(model, data_loader, optimizer, num_steps, val_data_x, mode='unpaired'):
+def train_model_steps(model, data_loader, optimizer, num_steps, val_data_x, val_data_y, device, args):
+    mode = args.mode
+    logger = wandb.init(entity="unpaired_multimodal", project="Gaussian_experiments", tags=[mode, args.tag], config={**vars(args)}, reinit="finish_previous")
     model.train()
     data_iter = iter(data_loader)
-    val_losses = []
-    steps = []
+    alpha_x = args.alpha_x
+    alpha_y = args.alpha_y
 
     tqdm_range = tqdm(range(num_steps), desc=f"Training ({mode})")
     for step in tqdm_range:
@@ -84,78 +46,146 @@ def train_model_steps(model, data_loader, optimizer, num_steps, val_data_x, mode
 
         optimizer.zero_grad()
         
-        if mode == 'unpaired':
-            x, y = batch['x'].to(device), batch['y'].to(device)
-            loss_x, loss_y, _ = model(x, y)
-            loss = loss_x + loss_y
+        x, y = batch['x'].to(device), batch['y'].to(device)
         
-        elif mode == 'x_only':
-            x = batch[0].to(device)
-            loss_x, _, _ = model(x=x)
+        if mode == 'xy':
+            loss_x, loss_y, _, _ = model(x, y)
+            loss = alpha_x * loss_x + alpha_y * loss_y
+        elif mode == 'x':
+            loss_x, _, _, _ = model(x=x, y=None)
+            loss_y = torch.tensor(0.0)
             loss = loss_x
         
         loss.backward()
         optimizer.step()
 
+        logger.log({
+            'train/loss_x': loss_x.item(),
+            'train/loss_y': loss_y.item(),
+            'train/loss': loss.item()
+        })
+
         if (step + 1) % EVAL_EVERY == 0:
             model.eval()
             with torch.no_grad():
-                _, _, recon_val_x = model(x=val_data_x)
-                val_loss = model.loss_fn(recon_val_x, val_data_x)
-                val_losses.append(val_loss.item())
-                steps.append(step + 1)
+                _, _, recon_val_x, recon_val_y = model(x=val_data_x, y=val_data_y)
+                val_loss_x = model.loss_fn(recon_val_x, val_data_x)
+                val_loss_y = model.loss_fn(recon_val_y, val_data_y)
+                logger.log({
+                    'val/loss_x': val_loss_x.item(),
+                    'val/loss_y': val_loss_y.item(),
+                    'val/loss': val_loss_x.item() + val_loss_y.item()
+                })
+                embeddings_x, embeddings_y = model.get_embeddings(x=val_data_x, y=val_data_y)
+                cka_score = cka(embeddings_x, embeddings_y)
+                mknn_score = mknn(embeddings_x, embeddings_y)
+                logger.log({
+                    'val/cka': cka_score,
+                    'val/mknn': mknn_score
+                })
             model.train()
-            
-            if (step + 1) % 100 == 0:
-                tqdm_range.set_description(f"Training ({mode}), Val Loss: {val_loss.item():.6f}")
+            tqdm_range.set_description(f"Training ({mode}), Val Loss X: {val_loss_x.item():.6f}, Val Loss Y: {val_loss_y.item():.6f}, Train Loss X: {loss_x.item():.6f}, Train Loss Y: {loss_y.item():.6f}")
 
-    return steps, val_losses
+def main(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-data_x_only_train = torch.load("data/data_x_only_train.pt")
-unpaired_train_data = torch.load("data/unpaired_train_data.pt")
-val_data = torch.load("data/val_data.pt")
-val_data_x = val_data['x'].to(device)
+    unpaired_train_data = generate_data({
+        'seed': 42,
+        'num_samples': args.train_num_samples,
+        'dim_c': args.data_dim_common,
+        'dim_x': args.data_dim_x,
+        'dim_y': args.data_dim_y,
+        'dim_obs': args.dim_obs,
+        'noise_std': args.noise_std,
+        'attenuate_x': True,
+        'attenuation': args.attenuation
+    })
+    val_data = generate_data({
+        'seed': 43,
+        'num_samples': args.val_num_samples,
+        'dim_c': args.data_dim_common,
+        'dim_x': args.data_dim_x,
+        'dim_y': args.data_dim_y,
+        'dim_obs': args.dim_obs,
+        'noise_std': args.noise_std,
+        'attenuate_x': False,
+        'attenuation': args.attenuation
+    })
+    val_data_x = val_data['x'].to(device)
+    val_data_y = val_data['y'].to(device)
 
-dataset_x_only = TensorDataset(data_x_only_train)
-loader_x_only = DataLoader(dataset_x_only, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+    if args.mode == 'xy':
+        # use both x and y, so the lengths are half of args.train_num_samples
+        dataset = UnpairedDataset(unpaired_train_data['x'][:args.train_num_samples//2], unpaired_train_data['y'][:args.train_num_samples-args.train_num_samples//2])
+    else:
+        # use only x, so the length is args.train_num_samples
+        dataset = UnpairedDataset(unpaired_train_data['x'], unpaired_train_data['y']) 
+    g_origin = torch.Generator()
+    g_origin.manual_seed(42)
+    loader_unpaired = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, generator=g_origin)
 
-dataset_unpaired = UnpairedDataset(unpaired_train_data['x'], unpaired_train_data['y'])
-loader_unpaired = DataLoader(dataset_unpaired, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+    make_reproducible(args.seed)
+    model = SharedAutoencoder(dim_obs = args.dim_obs, dim_common=args.dim_common, dim_latent=args.dim_latent).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    train_model_steps(
+        model, loader_unpaired, optimizer, args.num_steps, val_data_x, val_data_y, device, args
+    )
 
+if __name__ == "__main__":
+    outer_parser = argparse.ArgumentParser(description="Synthetic Search Experiment")
+    outer_parser.add_argument("-c", "--config", type=str, default="train.yaml", help="Configuration file")
+    outer_parser.add_argument("-s", "--slurm", action="store_true", help="Launched with slurm")
+    outer_parser.add_argument("-r", "--run", action="store_true", help="run the experiments")
+    outer_args = outer_parser.parse_args()
 
-torch.manual_seed(SEED)
-np.random.seed(SEED)
-print("\nRunning Experiment 1: X-data only")
-model_x_only = SharedAutoencoder().to(device)
-optimizer_x_only = optim.Adam(model_x_only.parameters(), lr=LR)
-steps_x, losses_x = train_model_steps(
-    model_x_only, loader_x_only, optimizer_x_only, NUM_STEPS, val_data_x, mode='x_only'
-)
+    with open(outer_args.config, "r") as f:
+        sweep_args = yaml.load(f, Loader=yaml.FullLoader)
+    
+    keys, values = zip(*sweep_args.items())
+    combinations = [dict(zip(keys, v)) for v in product(*[v if isinstance(v, list) else [v] for v in values])]
 
-print("Saved model for X-data only experiment.")
-torch.save(model_x_only.state_dict(), "model/model_x_only.pth")
+    print("Total combinations:", len(combinations))
+    for i, combo in enumerate(combinations):
+        print(f"Combination {i}: {combo}")
 
-torch.manual_seed(SEED)
-np.random.seed(SEED)
-print("\nRunning Experiment 2: Unpaired (X + Y)-data")
-model_unpaired = SharedAutoencoder().to(device)
-optimizer_unpaired = optim.Adam(model_unpaired.parameters(), lr=LR)
-steps_unpaired, losses_unpaired = train_model_steps(
-    model_unpaired, loader_unpaired, optimizer_unpaired, NUM_STEPS, val_data_x, mode='unpaired'
-)
+    if not outer_args.run:
+        print("use -r to run experiments")
+        exit(0)
 
-print("Saved model for Unpaired (X + Y)-data experiment.")
-torch.save(model_unpaired.state_dict(), "model/model_unpaired.pth")
+    parser = argparse.ArgumentParser(description="Synthetic Search Experiment")
+    parser.add_argument('--dim_obs', type=int, default=50, help='Dimension of observed data')
+    parser.add_argument('--dim_common', type=int, default=100, help='Dimension of common representation')
+    parser.add_argument('--dim_latent', type=int, default=128, help='Dimension of latent space')
+    parser.add_argument('--batch_size', type=int, default=512, help='Batch size for training')
+    parser.add_argument('--num_steps', type=int, default=1000, help='Number of training steps')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--data_dim_common', type=int, default=5, help='Dimension of common latent variable in data generation')
+    parser.add_argument('--data_dim_x', type=int, default=10, help='Dimension of X-specific latent variable in data generation')
+    parser.add_argument('--data_dim_y', type=int, default=10, help='Dimension of Y-specific latent variable in data generation')
+    parser.add_argument('--noise_std', type=float, default=0.1, help='Standard deviation of noise in data generation')
+    parser.add_argument('--train_num_samples', type=int, default=100000, help='Number of training samples')
+    parser.add_argument('--val_num_samples', type=int, default=2000, help='Number of validation samples')
+    parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--alpha_x', type=float, default=1.0, help='Alpha value for X')
+    parser.add_argument('--alpha_y', type=float, default=1.0, help='Alpha value for Y')
+    parser.add_argument('--mode', type=str, default='xy', help='Training mode: xy or x')
+    parser.add_argument('--tag', type=str, default='default', help='Tag for the experiment')
+    parser.add_argument('--attenuation', type=float, default=0.05, help='Attenuation factor for X generation')
+    # args = parser.parse_args()
 
-print("\nPlotting results...")
-plt.figure(figsize=(10, 6))
-plt.plot(steps_x, losses_x, label="X-data only", color="pink", linewidth=2)
-plt.plot(steps_unpaired, losses_unpaired, label="Unpaired (X + Y)-data", color="turquoise", linewidth=2)
-
-plt.title(f"Gaussian Experiment batch size = {BATCH_SIZE}")
-plt.xlabel("Training Steps")
-plt.ylabel("Reconstruction Error on X")
-plt.legend()
-plt.grid(True, linestyle='--')
-plt.ylim(bottom=min(min(losses_x), min(losses_unpaired)) * 0.95)
-plt.savefig("result.png")
+    if outer_args.slurm:
+        job_id = int(os.getenv("SLURM_ARRAY_TASK_ID", "-1"))
+        if job_id < 0 or job_id >= len(combinations):
+            print("Invalid SLURM_ARRAY_TASK_ID")
+            sys.exit(1)
+        combination = combinations[job_id]
+        print(f"=> Running combination {job_id}: {combination}")
+        args = parser.parse_args([], argparse.Namespace(**combination))
+        main(args)
+    else:
+        for i, combo in enumerate(combinations):
+            print(f"=> Running job {i}")
+            args = parser.parse_args([], argparse.Namespace(**combo))
+            print(args)
+            main(args)
