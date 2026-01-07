@@ -137,7 +137,8 @@ class UML(nn.Module):
 	
 	def forward(self, x, y):
 		# pool sequence dim of z
-		loss_x = loss_y = torch.tensor(0.0)
+		loss_x = torch.tensor(0.0)
+		loss_y = torch.tensor(0.0)
 		if x is not None:
 			x = x.unsqueeze(1).float() if x.ndim == 2 else x
 			x_proj = self.xproj_in(x)
@@ -159,7 +160,7 @@ class UML(nn.Module):
 				# next embedding prediction loss
 				loss_y = self.critic(y_recon[:, :-1,:], y[:,1:,:])
 		
-		return {'loss_x': loss_x, 'loss_y': loss_y}
+		return {'loss_x': loss_x, 'loss_y': loss_y, 'zx': zx if x is not None else None, 'zy': zy if y is not None else None}
 
 	def get_embedding(self, x, y):
 		x = x.unsqueeze(1).float() if x.ndim == 2 else x
@@ -175,14 +176,26 @@ def evaluate(model, config, ds_name='mosi'):
 	model.eval()
 	if ds_name == 'mimic':
 		for type in ['train', 'val', 'test']:
-			embds[type]['x1'] = np.concatenate([model.get_embedding(data[0].float().cuda(), data[1].float().cuda())[0].detach().cpu().numpy() for data in config[type]])
-			embds[type]['x2'] = np.concatenate([model.get_embedding(data[0].float().cuda(), data[1].float().cuda())[1].detach().cpu().numpy() for data in config[type]])
+			embds_info = [model(data[0].float().cuda(), data[1].float().cuda()) for data in config[type]]
+			embds[type]['x1'] = np.concatenate([emb_info['zx'].mean(dim=1).detach().cpu().numpy() for emb_info in embds_info])
+			embds[type]['x2'] = np.concatenate([emb_info['zy'].mean(dim=1).detach().cpu().numpy() for emb_info in embds_info])
+			embds[type]['loss_x1'] = np.array([emb_info['loss_x'].item() for emb_info in embds_info])
+			embds[type]['loss_x2'] = np.array([emb_info['loss_y'].item() for emb_info in embds_info])
 			embds[type]['labels'] = np.concatenate([data[2].detach().cpu().numpy() for data in config[type]])
+			# embds[type]['x1'] = np.concatenate([model.get_embedding(data[0].float().cuda(), data[1].float().cuda())[0].detach().cpu().numpy() for data in config[type]])
+			# embds[type]['x2'] = np.concatenate([model.get_embedding(data[0].float().cuda(), data[1].float().cuda())[1].detach().cpu().numpy() for data in config[type]])
+			# embds[type]['labels'] = np.concatenate([data[2].detach().cpu().numpy() for data in config[type]])
 	else:
 		for type in ['train', 'val', 'test']:
-			embds[type]['x1'] = np.concatenate([model.get_embedding(data[0][0].cuda(), data[0][2].cuda())[0].detach().cpu().numpy() for data in config[type]])
-			embds[type]['x2'] = np.concatenate([model.get_embedding(data[0][0].cuda(), data[0][2].cuda())[1].detach().cpu().numpy() for data in config[type]])
+			embds_info = [model(data[0][0].cuda(), data[0][2].cuda()) for data in config[type]]
+			embds[type]['x1'] = np.concatenate([emb_info['zx'].mean(dim=1).detach().cpu().numpy() for emb_info in embds_info])
+			embds[type]['x2'] = np.concatenate([emb_info['zy'].mean(dim=1).detach().cpu().numpy() for emb_info in embds_info])
+			embds[type]['loss_x1'] = np.array([emb_info['loss_x'].item() for emb_info in embds_info])
+			embds[type]['loss_x2'] = np.array([emb_info['loss_y'].item() for emb_info in embds_info])
 			embds[type]['labels'] = np.concatenate([data[3].detach().cpu().numpy() for data in config[type]])
+			# embds[type]['x1'] = np.concatenate([model.get_embedding(data[0][0].cuda(), data[0][2].cuda())[0].detach().cpu().numpy() for data in config[type]])
+			# embds[type]['x2'] = np.concatenate([model.get_embedding(data[0][0].cuda(), data[0][2].cuda())[1].detach().cpu().numpy() for data in config[type]])
+			# embds[type]['labels'] = np.concatenate([data[3].detach().cpu().numpy() for data in config[type]])
 
 	for type in ['train', 'val', 'test']:
 		if ds_name == 'mosi' or ds_name == 'mosei':
@@ -199,12 +212,16 @@ def evaluate(model, config, ds_name='mosi'):
 	clf.fit(embds['train']['x1'], embds['train']['labels'])
 	val_score_x = clf.score(embds['val']['x1'], embds['val']['labels'])
 	score_x = clf.score(embds['test']['x1'], embds['test']['labels'])
+	val_loss_x = np.mean(embds['val']['loss_x1'])
+	loss_x = np.mean(embds['test']['loss_x1'])
 	
 	# Train Logistic Classifier on Y alone
 	clf = make_pipeline(StandardScaler(with_mean=True, with_std=True), LogisticRegression(max_iter=1000, solver='liblinear')) if ds_name == 'mosi' else LogisticRegression(max_iter=200)
 	clf.fit(embds['train']['x2'], embds['train']['labels'])
 	val_score_y = clf.score(embds['val']['x2'], embds['val']['labels'])
 	score_y = clf.score(embds['test']['x2'], embds['test']['labels'])
+	val_loss_y = np.mean(embds['val']['loss_x2'])
+	loss_y = np.mean(embds['test']['loss_x2'])
 	
 	# Train Logistic Classifier on XY together
 	train_embeds = np.concatenate([embds['train']['x1'], embds['train']['x2']], axis=1)
@@ -216,7 +233,9 @@ def evaluate(model, config, ds_name='mosi'):
 	val_score_xy = clf.score(val_embeds, embds['val']['labels'])
 
 	# modification: return a dict of results
-	results = {"test/score_x": score_x, "test/score_y": score_y, "test/score_xy": score_xy, "val/score_x": val_score_x, "val/score_y": val_score_y, "val/score_xy": val_score_xy}
+	results = {"test/score_x": score_x, "test/score_y": score_y, "test/score_xy": score_xy, 
+		"val/score_x": val_score_x, "val/score_y": val_score_y, "val/score_xy": val_score_xy, 
+		"val/loss_x": val_loss_x, "val/loss_y": val_loss_y, "test/loss_x": loss_x, "test/loss_y": loss_y}
 	return results
 
 # CKA and mKNN metrics
@@ -277,10 +296,12 @@ def train(model, train_mode, train_loader_1, train_loader_2, optimizer, modaliti
 				x1_batch = data_batch_1[0].float().cuda()
 				x2_batch = data_batch_2[1].float().cuda()
 
+			if 'x' not in train_mode:
+				x1_batch = None
+			if 'y' not in train_mode:
+				x2_batch = None
 			out_loss = model(x1_batch, x2_batch)
 			loss_x, loss_y = out_loss['loss_x'], out_loss['loss_y']
-			loss_x = torch.tensor(0.0) if train_mode == 'y' else loss_x
-			loss_y = torch.tensor(0.0) if train_mode == 'x' else loss_y
 			loss = alphas[0] * loss_x + alphas[1] * loss_y
 			
 			optimizer.zero_grad()
@@ -296,10 +317,12 @@ def train(model, train_mode, train_loader_1, train_loader_2, optimizer, modaliti
 										'test/score_x': score['test/score_x'], 'test/score_y': score['test/score_y'], 'test/score_xy': score['test/score_xy'], 'val/score_x': score['val/score_x'], 'val/score_y': score['val/score_y'], 'val/score_xy': score['val/score_xy']})
 				if not debug: 
 					wandb.log({'test/score_x': score['test/score_x'], 'test/score_y': score['test/score_y'], 'test/score_xy': score['test/score_xy'], 
-								'val/score_x': score['val/score_x'], 'val/score_y': score['val/score_y'], 'val/score_xy': score['val/score_xy']})
+								'val/score_x': score['val/score_x'], 'val/score_y': score['val/score_y'], 'val/score_xy': score['val/score_xy'],
+								'val/loss_x': score['val/loss_x'], 'val/loss_y': score['val/loss_y'], 'test/loss_x': score['test/loss_x'], 'test/loss_y': score['test/loss_y']})
 
 				# modification: for embedding capture
 				if capture_embeddings_during_training:
+					# capture embeddings and calculate alignment metrics (cka/mknn/cosine similarity)
 					with torch.no_grad():
 						embeddings_this_epoch = {'x1': [], 'x2': []}
 						for i in range(len(fixed_samples['x1'])):
@@ -317,6 +340,29 @@ def train(model, train_mode, train_loader_1, train_loader_2, optimizer, modaliti
 					wandb.log({'val/cka': cka_score, 'val/mknn': mknn_score, 'val/cos_sim': cos_sim})
 					wandb.log({'val/diff_norm': diff_norm})
 
+					# VICReg metrics
+					with torch.no_grad():
+						all_labels = torch.cat([embeddings['x1_label'], embeddings['x2_label']], dim=0)
+						dim_variances = []
+						off_diag_covs = []
+						invariances = []
+						for label in all_labels.unique():
+							indices_x1 = (embeddings['x1_label'] == label).nonzero(as_tuple=True)[0]
+							indices_x2 = (embeddings['x2_label'] == label).nonzero(as_tuple=True)[0]
+							embs_x1_label = torch.cat([embeddings_this_epoch['x1'][i].unsqueeze(0) for i in indices_x1], dim=0)
+							embs_x2_label = torch.cat([embeddings_this_epoch['x2'][i].unsqueeze(0) for i in indices_x2], dim=0)
+							embs = torch.cat([embs_x1_label, embs_x2_label], dim=0)
+							
+							mean_emb = embs.mean(dim=0, keepdim=True)
+							dim_variance = embs.var(dim=0).mean()
+							cov = (embs - mean_emb).T @ (embs - mean_emb) / (embs.shape[0] - 1)
+							off_diag_cov = (cov - torch.diag(torch.diagonal(cov))).pow(2).sum() / embs.shape[1]
+							invariance = (embs - mean_emb).pow(2).mean()
+							dim_variances.append(dim_variance.item())
+							off_diag_covs.append(off_diag_cov.item())
+							invariances.append(invariance.item())
+						wandb.log({'val/dim_variance': np.mean(dim_variances), 'val/off_diag_cov': np.mean(off_diag_covs), 'val/invariance': np.mean(invariances)})
+						
 				model.train()
 		progress_bar.update(1)
 

@@ -35,6 +35,7 @@ parser.add_argument('--debug', action='store_true')
 parser.add_argument('--run_name', type=str, default='')
 parser.add_argument('--results_dir', type=str, default='./results')
 parser.add_argument('--log_dir', type=str, default='./logs')
+parser.add_argument('--alpha_x', type=float, default=1.0)
 parser.add_argument('--alpha_y', type=float, default=1.0)
 
 
@@ -44,7 +45,7 @@ def main(args):
     print("Command-line arguments:", sys.argv)
     print("Parsed arguments:", args)
 
-    exp_name = f"log_{args.run_name}{args.ds_name}/mod{args.modality}/epochs{args.num_epochs}/zdim{args.zdim}/alpha_y{args.alpha_y}/step_k{args.step_k}/pos_embd_{args.pos_embd}_learnable_{args.pos_learnable}/lr{args.lr}"
+    exp_name = f"log_{args.run_name}{args.ds_name}/mod{args.modality}/epochs{args.num_epochs}/zdim{args.zdim}/alpha_x{args.alpha_x}_alpha_y{args.alpha_y}/step_k{args.step_k}/pos_embd_{args.pos_embd}_learnable_{args.pos_learnable}/lr{args.lr}"
     results_dir = os.path.join(args.results_dir, exp_name)
     seeds = [i for i in range(args.n_seeds)]
     outs = {'test/score_x': [], 'test/score_y': [], 'test/score_xy': [], 'val/score_x': [], 'val/score_y': [], 'val/score_xy': []}
@@ -122,7 +123,7 @@ def main(args):
         results = train(model, args.modality, train_loader, train_loader_2, optimizer, 
                     num_epoch=args.num_epochs, step_k=args.step_k, ds_name=args.ds_name,
                     eval_config={'train': eval_train_loader, 'val': eval_valid_loader, 'test': eval_test_loader, 'freq': 100},
-                    alpha_x=1.0, alpha_y=args.alpha_y, capture_embeddings_during_training=capture_embeddings_during_training,
+                    alpha_x=args.alpha_x, alpha_y=args.alpha_y, capture_embeddings_during_training=capture_embeddings_during_training,
                     augment=args.augment, debug=args.debug)
         
         if capture_embeddings_during_training:
