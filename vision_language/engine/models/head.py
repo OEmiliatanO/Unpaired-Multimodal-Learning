@@ -88,6 +88,10 @@ class UML(torch.nn.Module):
         images = self.vision_model.forward(images)
         images = self.img_proj(images) if self.img_proj is not None else images
         return images
+    
+    def extract_raw_features(self, images):
+        images = self.vision_model.forward(images)
+        return images
 
     def zero_shot_init(self, zeroshot_dataset):
         print("=> Initializing head with zero-shot weights")
@@ -135,4 +139,3 @@ class UMLClip(torch.nn.Module):
     def zero_shot_init(self, zeroshot_dataset):
         print("=> Initializing head with zero-shot weights")
         self.head.weight.data = get_zero_shot_weights(zeroshot_dataset, self.num_classes, self.shared_dim)
- 
