@@ -218,7 +218,17 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
                 model.train()
                 all_img_features.append(img_features)
 
-                cka_score = cka(img_features, text_samples) if text_samples is not None else 0
+                img_features_class_mean = []
+                inclass_distances = []
+                for label in range():
+                    indices = (image_samples_labels == label).nonzero(as_tuple=True)[0]
+                    img_features_mean = img_features[indices].mean(dim=0)
+                    inclass_distance_label = torch.norm(img_features[indices] - img_features_mean.unsqueeze(0), dim=1).mean().item()
+                    inclass_distances.append(inclass_distance_label)
+                    img_features_class_mean.append(img_features_mean.unsqueeze(0))
+                img_features_class_mean = torch.cat(img_features_class_mean, dim=0)
+                inclass_distances = np.mean(inclass_distances)
+                cka_score = cka(img_features_class_mean, text_samples) if text_samples is not None else 0
                 mknn_score = mknn(img_features, text_samples) if text_samples is not None else 0
         
         if logger is not None:
@@ -228,7 +238,9 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
                         'train/feature_direction_sim': torch.dot(image_feature.mean(dim=0).flatten(), text_features.mean(dim=0).flatten()).item() / (torch.norm(image_feature.mean(dim=0).flatten()) * torch.norm(text_features.mean(dim=0).flatten())).item() if text_features is not None else 0,
                         'train/grad_agreement_rate': agreement_rate.item(),
                         'train/cka_score': cka_score,
-                        'train/mknn_score': mknn_score})
+                        'train/mknn_score': mknn_score,
+                        'train/inclass_distance': inclass_distances
+        })
         progress_bar.update(1)
 
         if i % eval_freq == 0:
