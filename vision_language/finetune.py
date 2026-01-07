@@ -23,6 +23,7 @@ import yaml
 import warnings
 from tqdm import trange
 import wandb
+import numpy as np
 
 warnings.filterwarnings("ignore")
 
@@ -75,16 +76,86 @@ def savedir(outdir, dataset, encoder, train_shot, seed, text_type, text_shots, i
     mod_name = f"{mod_name}-common_dim_{args.common_dim}" if args is not None and mode != 'crossmodal' else mod_name
     return os.path.join(outdir, benchname, encoder.replace("/", "-"), mod_name, init_mode)
 
+def get_few_shot_image_samples(args, shot=1):
+    print("args.data_dir: ", args.data_dir)
+    datasets = get_few_shot_benchmark(args.data_dir, args.indices_dir, args.dataset, shot, seed=1)
+    img_tr_ds = datasets['train']
+    lab2cname = datasets['lab2cname']
+    tr_transform = build_transform('crop')
+    bs = 512
+    train_loader = DataLoader(DatasetWrapper(img_tr_ds, transform=tr_transform), batch_size=bs, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    image_samples, image_labels = [], []
+    for batch in train_loader:
+        images, labels = batch['img'], batch['label']
+        image_samples.append(images)
+        image_labels.append(labels)
+    image_samples = torch.cat(image_samples, dim=0)
+    image_labels = torch.cat(image_labels, dim=0)
+    return image_samples, image_labels
 
-def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, scheduler, device="cuda", max_iters=1000, alpha=1.0, eval_freq=EVAL_FREQ, patience = 5, logger=None):
+def get_n_text_features(text_loader, n):
+    text_samples, text_labels = [], []
+    for i, batch in enumerate(text_loader):
+        if (i+1) * text_loader.batch_size >= n:
+            text_samples.append(batch[0][:n - i * text_loader.batch_size])
+            text_labels.append(batch[1][:n - i * text_loader.batch_size])
+            break
+        text_features, labels, _ = batch
+        text_samples.append(text_features)
+        text_labels.append(labels)
+    text_samples = torch.cat(text_samples, dim=0)
+    text_labels = torch.cat(text_labels, dim=0)
+    return text_samples, text_labels
+
+# CKA and mKNN metrics
+from metrics import AlignmentMetrics
+def cka(feats_A, feats_B):
+	kwargs = {'kernel_metric': 'ip'}
+	return AlignmentMetrics.measure('cka', feats_A, feats_B, **kwargs)
+
+def mknn(feats_A, feats_B):
+	kwargs = {'topk': 10}
+	return AlignmentMetrics.measure('mutual_knn', feats_A, feats_B, **kwargs)
+
+def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, scheduler, device="cuda", max_iters=1000, alpha=1.0, eval_freq=EVAL_FREQ, patience = 5, capture_features_during_training = False, features_pth = "./", args=None, logger=None):
     out = {'iter': None, 'val_acc': None, 'model': None, 'val_classwise': None, 'val_loss': None, 'model_records': []}
     model.train()
     assert image_loader is not None or text_loader is not None, "At least one of the loaders should be provided"
+
+    # get the samples
+    if capture_features_during_training:
+        print(f"=> Ready to save captured features during training at {features_pth}")
+        text_features_pth = os.path.join(features_pth, 'all_iter_text_features.pth')
+        image_features_pth = os.path.join(features_pth, 'all_iter_image_features.pth')
+        text_labels_pth = os.path.join(features_pth, 'all_iter_text_labels.pth')
+        image_labels_pth = os.path.join(features_pth, 'all_iter_image_labels.pth')
+        sample_num = 1000
+        image_samples, image_samples_labels = get_few_shot_image_samples(args=args, shot=16)
+        if text_loader is not None:
+            text_samples, text_samples_labels = get_n_text_features(text_loader, n=sample_num)
+        else:
+            text_samples, text_samples_labels = None, None
+        # image_samples: shape: [sample_num, ...]
+        # image_samples_labels: shape: [sample_num,]
+        # text_samples: shape: [sample_num, text_dim]
+        # text_samples_labels: shape: [sample_num,]
+        sample_num = image_samples_labels.shape[0]
+        all_img_features = []
+
+        with torch.no_grad():
+            model.eval()
+            img_raw_features = []
+            bs = 512
+            for j in range(0, sample_num, bs):
+                image_batch = image_samples[j: j + bs]
+                img_feature = model.extract_raw_features(image_batch.to(device)).detach().cpu()
+                img_raw_features.append(img_feature)
+            img_raw_features = torch.cat(img_raw_features, dim=0)
+        torch.save(img_raw_features, os.path.join(features_pth, 'all_iter_image_raw_features.pth'))
     
     image_iter = iter(image_loader) if image_loader is not None else None
     text_iter = iter(text_loader) if text_loader is not None else None
     no_improve = 0
-
     img_alpha = 1.0
     progress_bar = trange(max_iters, desc="Training")
     for i in range(max_iters):
@@ -107,27 +178,63 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
         
         optimizer.zero_grad()
         image_logits, text_logits = model(raw_images, text_features)
+        with torch.no_grad():
+            image_feature = model.extract_features(raw_images).detach()
         image_indices = modality_flags == 1
         text_indices = modality_flags == 0
         image_loss = torch.nn.functional.cross_entropy(image_logits, labels[image_indices]) if image_indices.any() else torch.tensor(0.0)
         text_loss = torch.nn.functional.cross_entropy(text_logits, labels[text_indices]) if text_indices.any() else torch.tensor(0.0)
         loss = img_alpha * image_loss + alpha * text_loss
 
-        loss.backward()
+        (grad_img,) = torch.autograd.grad(image_loss, model.head.weight, retain_graph=True) if image_indices.any() else (torch.zeros_like(model.head.weight),) # shape: [class_num, shared_dim]
+        (grad_txt,) = torch.autograd.grad(text_loss, model.head.weight, retain_graph=True) if text_indices.any() else (torch.zeros_like(model.head.weight),)   # shape: [class_num, shared_dim]
+
+        loss.backward(retain_graph=True)
         optimizer.step()
         scheduler.step()
 
         img_acc = (torch.argmax(image_logits, dim=1) == labels[image_indices]).float().mean().item() if image_indices.any() else 0.0
         text_acc = (torch.argmax(text_logits, dim=1) == labels[text_indices]).float().mean().item() if text_indices.any() else 0.0
+
+        grad_img_mean = torch.abs(torch.mean(grad_img, dim=0)).detach() # shape: [shared_dim,]
+        grad_txt_mean = torch.abs(torch.mean(grad_txt, dim=0)).detach() # shape: [shared_dim,]
+
+        grad_img = torch.flatten(grad_img)
+        grad_txt = torch.flatten(grad_txt)
+        grad_direction_sim = torch.dot(grad_img, grad_txt) / (torch.norm(grad_img) * torch.norm(grad_txt)) if image_indices.any() and text_indices.any() else 0
+        agreement_rate = torch.mean((torch.sign(grad_img) == torch.sign(grad_txt)).float()) if image_indices.any() and text_indices.any() else 0
+
+        # Compute features for all samples
+        if capture_features_during_training:
+            with torch.no_grad():
+                model.eval()
+                img_features = []
+                bs = 512
+                for j in range(0, sample_num, bs):
+                    image_batch = image_samples[j: j + bs]
+                    img_feature = model.extract_features(image_batch.to(device)).detach().cpu()
+                    img_features.append(img_feature)
+                img_features = torch.cat(img_features, dim=0)
+                model.train()
+                all_img_features.append(img_features)
+
+                cka_score = cka(img_features, text_samples) if text_samples is not None else 0
+                mknn_score = mknn(img_features, text_samples) if text_samples is not None else 0
+        
         if logger is not None:
             logger.log({'train/image_loss': image_loss.item(), 'train/text_loss': text_loss.item(),
-                        'train/image_acc': img_acc, 'train/text_acc': text_acc, 'train/lr': scheduler.get_last_lr()[0], 'iter': i})
+                        'train/image_acc': img_acc, 'train/text_acc': text_acc, 'train/lr': scheduler.get_last_lr()[0], 
+                        'train/grad_direction_sim': grad_direction_sim, 'train/img_grad_norm': torch.norm(grad_img).item(), 'train/txt_grad_norm': torch.norm(grad_txt).item(), 
+                        'train/feature_direction_sim': torch.dot(image_feature.mean(dim=0).flatten(), text_features.mean(dim=0).flatten()).item() / (torch.norm(image_feature.mean(dim=0).flatten()) * torch.norm(text_features.mean(dim=0).flatten())).item() if text_features is not None else 0,
+                        'train/grad_agreement_rate': agreement_rate.item(),
+                        'train/cka_score': cka_score,
+                        'train/mknn_score': mknn_score})
         progress_bar.update(1)
 
         if i % eval_freq == 0:
             # Modification: store model states for analysis
             state_dict_cpu = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            out['model_records'].append(deepcopy(state_dict_cpu))
+            # out['model_records'].append(deepcopy(state_dict_cpu))
 
             val_loss, val_acc = validate(model, val_loader, device=device)
             testlog = ''
@@ -156,6 +263,15 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
     if logger is not None:
         logger.log({'val/best_val_loss': val_loss, 'val/best_val_acc': val_acc, 'iter': out['iter']})
     print(f"=> Best Val Loss {val_loss:.4f}, Val Acc {val_acc:.4f} at Iter {out['iter']}")
+
+    if capture_features_during_training:
+        all_img_features = torch.stack(all_img_features, dim=0)  # shape: [iterations, sample_num, model.shared_dim]
+        torch.save(all_img_features, image_features_pth)   # shape: [iterations, sample_num, model.shared_dim]
+        del all_img_features
+        torch.save(image_samples_labels, image_labels_pth) # shape: [sample_num,]
+        if text_samples is not None:
+            torch.save(text_samples, text_features_pth)        # shape: [sample_num, text_dim]
+            torch.save(text_samples_labels, text_labels_pth)   # shape: [sample_num,]
     return out
 
 
@@ -182,6 +298,7 @@ def validate(model, val_loader, device="cuda"):
         val_acc = (all_preds == all_labels).float().mean().item()
         val_loss = torch.stack(loss).mean().item()
 
+        model.train()
     return val_loss, val_acc
 
 # Modification: setup wandb logger
@@ -253,10 +370,10 @@ def setup(datasets, hparams, args):
     test_loader = DataLoader(DatasetWrapper(datasets['img_te_ds'], transform=datasets["te_transform"]), batch_size=hparams['batch_size'], shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
 
+    capture_features_during_training = True # TODO
     result_dict = train(model, image_loader, text_loader, val_loader, 
                         test_loader if args.eval_test else None, optimizer, scheduler, device=device, 
-                        max_iters=hparams['max_iter'], alpha=args.alpha, eval_freq=EVAL_FREQ, patience=hparams['patience'], logger = wandb_log)
-    
+                        max_iters=hparams['max_iter'], alpha=args.alpha, eval_freq=EVAL_FREQ, patience=hparams['patience'], capture_features_during_training=capture_features_during_training, features_pth=ckpt_dir, args=args, logger = wandb_log)
     test_loss, test_acc = validate(model, test_loader, device=device)
     # Modification: prevent OOM
     del model
@@ -266,9 +383,9 @@ def setup(datasets, hparams, args):
     print(f"=> Test Acc: {test_acc:.4f}")
     if not FLAG or args.overwrite:
         test_dir = os.path.dirname(test_path)
-        for i in range(len(result_dict['model_records'])):
-            record_path = os.path.join(test_dir, f'model_state_iter_{i * EVAL_FREQ}_{(len(result_dict['model_records'])-1) * EVAL_FREQ}.pth')
-            torch.save(result_dict['model_records'][i], record_path)
+        # for i in range(len(result_dict['model_records'])):
+        #     record_path = os.path.join(test_dir, f'model_state_iter_{i * EVAL_FREQ}_{(len(result_dict['model_records'])-1) * EVAL_FREQ}.pth')
+        #     torch.save(result_dict['model_records'][i], record_path)
         print(f"=> Saving Test Results for hparams to {test_path}")
         torch.save(test_dict, test_path)
     return test_dict
