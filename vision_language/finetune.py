@@ -121,6 +121,7 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
     out = {'iter': None, 'val_acc': None, 'model': None, 'val_classwise': None, 'val_loss': None, 'model_records': []}
     model.train()
     assert image_loader is not None or text_loader is not None, "At least one of the loaders should be provided"
+    n_class = args.nclasses if args is not None else model.head.weight.shape[0]
 
     # get the samples
     if capture_features_during_training:
@@ -220,7 +221,7 @@ def train(model, image_loader, text_loader, val_loader, test_loader, optimizer, 
 
                 img_features_class_mean = []
                 inclass_distances = []
-                for label in range():
+                for label in range(n_class):
                     indices = (image_samples_labels == label).nonzero(as_tuple=True)[0]
                     img_features_mean = img_features[indices].mean(dim=0)
                     inclass_distance_label = torch.norm(img_features[indices] - img_features_mean.unsqueeze(0), dim=1).mean().item()
