@@ -188,7 +188,7 @@ def get_few_shot_benchmark(data_dir,
         few_shot_dataset = load_json(few_shot_index_file)
     else:
         print("=> Using full dataset for feature extraction")
-    print(f"=> Loading benchmark dataset: {data_dir}, {dataset}")
+    print(f"=> Loading benchmark dataset ({dataset}) from {data_dir}")
     benchmark = dataset_classes[dataset](data_dir)
     
     return {
