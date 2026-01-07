@@ -3,8 +3,8 @@ from torch.utils.data import Dataset, DataLoader, TensorDataset
 import numpy as np
 from utils import make_reproducible
 
-# configs = {'seed': 0, 'num_samples': 1000, 'dim_c': 5, 'dim_x': 3, 'dim_y': 3,
-#            'dim_obs': 10, 'noise_std': 0.1, 'attenuate_x': True, 'attenuation': 0.05}
+# configs = {'seed': 0, 'num_samples': 10000, 'dim_c': 100, 'dim_x': 3, 'dim_y': 3,
+#            'dim_obs': 50, 'noise_std': 0.1, 'attenuate_x': True, 'attenuation': 0.05}
 def generate_data(configs):
     make_reproducible(configs['seed'])
     theta_c = torch.randn(configs['num_samples'], configs['dim_c'])
@@ -21,7 +21,7 @@ def generate_data(configs):
 
     if configs['attenuate_x']:
         attenuation = torch.full((configs['dim_c'],), configs['attenuation'])
-        attenuation[0] = 1.0
+        attenuation[:int(configs['dim_c']*0.1)] = 1.0
         theta_c_x = theta_c * attenuation
     else:
         theta_c_x = theta_c
@@ -33,3 +33,9 @@ def generate_data(configs):
     data_y = (theta_c @ B_c.T) + (theta_y @ B_y.T) + noise_y
 
     return {'x': data_x, 'y': data_y}
+
+if __name__ == "__main__":
+    configs = {'seed': 0, 'num_samples': 5, 'dim_c': 3, 'dim_x': 5, 'dim_y': 5,
+               'dim_obs': 10, 'noise_std': 0.0, 'attenuate_x': True, 'attenuation': 0.05}
+    data = generate_data(configs)
+    print(data['x'])
