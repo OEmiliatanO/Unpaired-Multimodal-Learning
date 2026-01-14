@@ -117,7 +117,7 @@ def evaluate(model, config, ds_name='mosi'):
 			raw_data[type] = [[data_[0][0], data_[0][2], data_[1][0], data_[1][2]] for data_ in config[type]]
 		embds_info = [model(x.cuda(), y.cuda(), x_lengths=lx.cuda(), y_lengths=ly.cuda()) for x,y,lx,ly in raw_data[type]]
 		for i in range(len(raw_data[type])):
-			lx, ly = raw_data[type][i][2]-1, raw_data[type][i][3]-1 # next-token prediction, so length - 1
+			lx, ly = raw_data[type][i][2], raw_data[type][i][3]
 			mask_x = torch.arange(raw_data[type][i][0].shape[1], device=lx.device).unsqueeze(0) < lx.unsqueeze(1) # [batch_size, seq_len]
 			mask_x_expanded = mask_x.unsqueeze(-1).expand_as(embds_info[i]['zx']).float().cuda() # [batch_size, seq_len, zdim]
 			zx_i_mean = (embds_info[i]['zx'] * mask_x_expanded).sum(dim=1) / mask_x_expanded.sum(dim=1) # [batch_size, zdim]
