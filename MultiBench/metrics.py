@@ -249,11 +249,20 @@ def hsic_unbiased(K, L):
     return HSIC_value
 
 
-def hsic_biased(K, L):
-    """ Compute the biased HSIC (the original CKA) """
-    H = torch.eye(K.shape[0], dtype=K.dtype, device=K.device) - 1 / K.shape[0]
-    return torch.trace(K @ H @ L @ H)
+# def hsic_biased(K, L):
+#     """ Compute the biased HSIC (the original CKA) """
+#     H = torch.eye(K.shape[0], dtype=K.dtype, device=K.device) - 1 / K.shape[0]
+#     return torch.trace(K @ H @ L @ H)
 
+def hsic_biased(K, L):
+    """ O(N^2) implementation of biased HSIC """
+    mean_k = K.mean()
+    K_c = K - K.mean(dim=0, keepdim=True) - K.mean(dim=1, keepdim=True) + mean_k
+    
+    mean_l = L.mean()
+    L_c = L - L.mean(dim=0, keepdim=True) - L.mean(dim=1, keepdim=True) + mean_l
+
+    return torch.sum(K_c * L_c)
     
 def compute_knn_accuracy(knn):
     """
