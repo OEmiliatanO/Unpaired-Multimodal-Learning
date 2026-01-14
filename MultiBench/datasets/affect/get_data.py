@@ -8,6 +8,8 @@ import numpy as np
 from numpy.core.numeric import zeros_like
 from torch.nn.functional import pad
 from torch.nn import functional as F
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 sys.path.append(os.getcwd())
 
@@ -471,7 +473,7 @@ def _process_2(inputs: List):
 
 if __name__ == '__main__':
     traindata, validdata, test_robust = \
-    get_dataloader('./humor.pkl', robust_test=False, max_pad=True, task='classification', data_type='humor', max_seq_len=40)
+    get_dataloader('./data_files/sarcasm.pkl', robust_test=False, data_type='sarcasm', vision_norm=True)
 
     # keys = list(test_robust.keys())
     
@@ -485,21 +487,32 @@ if __name__ == '__main__':
     
     #     break
 
+    # batch[0] -- modality data
+    #          -- batch[0][0] -- vision: [B, T, D]
+    #          -- batch[0][1] -- audio: [B, T, D]
+    #          -- batch[0][2] -- text: [B, T, D]
+    # batch[1] -- lengths
+    #          -- batch[1][0] -- vision lengths: [B]
+    #          -- batch[1][1] -- audio lengths: [B]
+    #          -- batch[1][2] -- text lengths: [B]
+
+    # batch[0][0][batch[1][0],...]
     for batch in traindata:
-        print(batch[0].shape)
-        print(batch[1].shape)
-        print(batch[2].shape)
-        print(batch[3].shape)
+        print(batch[0][0].shape) # vision
+        print(batch[0][2].shape) # text
+        print(len(batch[1])) # vision lengths
+        print(batch[0][0][0].abs().sum(-1) == 0.0)
+        print(batch[0][0][0][:batch[1][0][0]])
         break
 
     # test_robust[keys[0]][1]
-    for batch in test_robust:
-        print(batch[-1])
-        break
-        # for b in batch:
+    # for batch in test_robust:
+    #     print(batch[-1])
+    #     break
+    #     # for b in batch:
             
             
         
         
         
-        # break
+    #     # break
