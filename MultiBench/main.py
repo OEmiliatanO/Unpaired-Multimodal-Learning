@@ -42,7 +42,7 @@ parser.add_argument('--infoNCE_loss', action='store_true')
 
 
 # change this to your data directory
-data_dir = './'
+data_dir = '.'
 def main(args):
     print("Command-line arguments:", sys.argv)
     print("Parsed arguments:", args)
