@@ -71,17 +71,25 @@ class Transformer(nn.Module):
                 pe[:, 1::2] = torch.cos(position * div_term)
                 self.register_buffer('pos_table', pe)  # (L, D)
 
-    def forward(self, x):
+    def forward(self, x, lengths=None):
         """Apply Transformer to Input.
 
         Args:
             x (torch.Tensor): Layer Input
+            lengths (torch.Tensor, optional): (batch_size) - Optional, the true lengths of each sequence in the batch.
 
         Returns:
             torch.Tensor: Layer Output
         """
         if type(x) is list:
             x = x[0] # (batch_size, seq_len, embed_dim)
+        
+        batch_size, seq_len, _ = x.shape
+        
+        key_padding_mask = None
+        if lengths is not None:
+            key_padding_mask = torch.arange(seq_len, device=x.device).expand(batch_size, seq_len) >= lengths.unsqueeze(1)
+
         if self.conv1d:
             x = self.conv(x.permute([0, 2, 1])) # (batch_size, embed_dim/channel, seq_len)
             x = x.permute([2, 0, 1]) # (seq_len, batch_size, embed_dim)
@@ -94,7 +102,8 @@ class Transformer(nn.Module):
             if seq_len > self.max_len:
                 seq_len = self.max_len
                 x = x[:seq_len]
-            positions = torch.arange(seq_len, device=x.device)
+            curr_seq_len = x.size(0)
+            positions = torch.arange(curr_seq_len, device=x.device)
             if self.pos_learnable:
                 pos = self.pos_embedding(positions)  # (seq_len, D)
             else:
@@ -104,8 +113,14 @@ class Transformer(nn.Module):
         # Create causal mask for autoregressive modeling
         seq_len = x.size(0)
         causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
-        x = self.transformer(x, mask=causal_mask, is_causal=True)
+        x = self.transformer(x, mask=causal_mask, src_key_padding_mask=key_padding_mask, is_causal=True)
         if self.out_last:
+            if lengths is not None:
+                # x: (seq_len, batch, embed_dim)
+                x = x.permute(1, 0, 2) # (batch, seq_len, embed_dim)
+                batch_indices = torch.arange(batch_size, device=x.device)
+                last_indices = lengths - 1
+                return x[batch_indices, last_indices, :]
             return x[-1]
         x = x.permute([1, 0, 2]) # (batch_size, seq_len, embed_dim)
         return x

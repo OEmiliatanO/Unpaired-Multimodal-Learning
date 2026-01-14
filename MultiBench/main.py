@@ -1,7 +1,8 @@
 import os
 import sys
-from models import Transformer, Linear
-from train import UML, train, set_seed
+from models import Transformer, Linear, UML
+from train import train
+from utilis import set_seed
 from torch import optim
 from datasets.affect.get_data import get_dataloader
 import torch
@@ -59,7 +60,7 @@ def main(args):
             os.makedirs(log_dir, exist_ok=True)
             os.environ["WANDB_DIR"] = log_dir + "/wandb"
             loss_tag = "infoNCE" if args.infoNCE_loss else "MSE"
-            wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.ds_name, args.modality, "self-supervised", loss_tag], name = os.path.join(exp_name, f"seed_{seed}"), reinit="finish_previous")
+            wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.ds_name, args.modality, "self-supervised"], name = os.path.join(exp_name, f"seed_{seed}"), reinit="finish_previous")
             wandb.config.update(args)
             wandb.config.update({'seed': seed})
         if args.ds_name == 'mosi':
