@@ -37,6 +37,7 @@ parser.add_argument('--results_dir', type=str, default='./results')
 parser.add_argument('--log_dir', type=str, default='./logs')
 parser.add_argument('--alpha_x', type=float, default=1.0)
 parser.add_argument('--alpha_y', type=float, default=1.0)
+parser.add_argument('--infoNCE_loss', action='store_true')
 
 
 # change this to your data directory
@@ -57,7 +58,8 @@ def main(args):
         if not args.debug:  
             os.makedirs(log_dir, exist_ok=True)
             os.environ["WANDB_DIR"] = log_dir + "/wandb"
-            wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.ds_name, args.modality, "self-supervised"], name = os.path.join(exp_name, f"seed_{seed}"), reinit="finish_previous")
+            loss_tag = "infoNCE" if args.infoNCE_loss else "MSE"
+            wandb.init(entity="unpaired_multimodal", project="unpaired_multimodal", tags=[args.ds_name, args.modality, "self-supervised", loss_tag], name = os.path.join(exp_name, f"seed_{seed}"), reinit="finish_previous")
             wandb.config.update(args)
             wandb.config.update({'seed': seed})
         if args.ds_name == 'mosi':
@@ -115,7 +117,7 @@ def main(args):
         yproj_in = Linear(indims[1], args.zdim)
         shared_encoder = Transformer(args.zdim, args.zdim, nhead=5, num_layers=5, conv1d=True, out_last=False, pos_embd=args.pos_embd, pos_learnable=args.pos_learnable, max_len=128)
         decoders = [Linear(args.zdim, indims[0]), Linear(args.zdim, indims[1])]
-        model = UML(xproj_in, yproj_in, shared_encoder, decoders, modality=args.modality).cuda()
+        model = UML(xproj_in, yproj_in, shared_encoder, decoders, modality=args.modality, infoNCE_loss=args.infoNCE_loss).cuda()
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
         # Train model
@@ -124,7 +126,7 @@ def main(args):
                     num_epoch=args.num_epochs, step_k=args.step_k, ds_name=args.ds_name,
                     eval_config={'train': eval_train_loader, 'val': eval_valid_loader, 'test': eval_test_loader, 'freq': 100},
                     alpha_x=args.alpha_x, alpha_y=args.alpha_y, capture_embeddings_during_training=capture_embeddings_during_training,
-                    augment=args.augment, debug=args.debug)
+                    augment=args.augment, debug=args.debug, args=args)
         
         if capture_embeddings_during_training:
             score, embeddings = results
