@@ -2,6 +2,7 @@
 import torch
 import math
 from torch import nn
+import torch.nn.functional as F
 
 class Linear(torch.nn.Module):
     """Linear Layer with Xavier Initialization, and 0 Bias."""
