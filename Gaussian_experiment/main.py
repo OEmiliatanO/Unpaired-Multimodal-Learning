@@ -30,7 +30,7 @@ EVAL_EVERY = 1
 
 def train_model_steps(model, data_loader, optimizer, num_steps, val_data_x, val_data_y, device, args):
     mode = args.mode
-    logger = wandb.init(entity="unpaired_multimodal", project="Gaussian_experiments", tags=[mode, args.tag], config={**vars(args)}, reinit="finish_previous")
+    logger = wandb.init(entity="unpaired_multimodal", project="Gaussian_experiments", tags=[mode, args.tag, "new_data"], config={**vars(args)}, reinit="finish_previous")
     model.train()
     data_iter = iter(data_loader)
     alpha_x = args.alpha_x
@@ -52,8 +52,7 @@ def train_model_steps(model, data_loader, optimizer, num_steps, val_data_x, val_
             loss_x, loss_y, _, _ = model(x, y)
             loss = alpha_x * loss_x + alpha_y * loss_y
         elif mode == 'x':
-            loss_x, _, _, _ = model(x=x, y=None)
-            loss_y = torch.tensor(0.0)
+            loss_x, loss_y, _, _ = model(x=x, y=y)
             loss = loss_x
         
         loss.backward()
@@ -99,7 +98,20 @@ def main(args):
         'dim_obs': args.dim_obs,
         'noise_std': args.noise_std,
         'attenuate_x': True,
-        'attenuation': args.attenuation
+        'attenuation': args.attenuation,
+        'shared_latent_distribution_type': 'gaussian'
+    })
+    unpaired_train_data2 = generate_data({
+        'seed': 44,
+        'num_samples': args.train_num_samples,
+        'dim_c': args.data_dim_common,
+        'dim_x': args.data_dim_x,
+        'dim_y': args.data_dim_y,
+        'dim_obs': args.dim_obs,
+        'noise_std': args.noise_std,
+        'attenuate_x': True,
+        'attenuation': args.attenuation,
+        'shared_latent_distribution_type': 'laplace'
     })
     val_data = generate_data({
         'seed': 43,
@@ -110,17 +122,22 @@ def main(args):
         'dim_obs': args.dim_obs,
         'noise_std': args.noise_std,
         'attenuate_x': False,
-        'attenuation': args.attenuation
+        'attenuation': args.attenuation,
+        'shared_latent_distribution_type': 'gaussian'
     })
     val_data_x = val_data['x'].to(device)
     val_data_y = val_data['y'].to(device)
 
     if args.mode == 'xy':
         # use both x and y, so the lengths are half of args.train_num_samples
-        dataset = UnpairedDataset(unpaired_train_data['x'][:args.train_num_samples//2], unpaired_train_data['y'][:args.train_num_samples-args.train_num_samples//2])
+        if args.unrelated_info:
+            # use another dataset for y, so that x and y have unrelated information
+            dataset = UnpairedDataset(unpaired_train_data['x'][:args.train_num_samples//2], unpaired_train_data2['y'][:args.train_num_samples-args.train_num_samples//2])
+        else:
+            dataset = UnpairedDataset(unpaired_train_data['x'][:args.train_num_samples//2], unpaired_train_data['y'][:args.train_num_samples-args.train_num_samples//2])
     else:
         # use only x, so the length is args.train_num_samples
-        dataset = UnpairedDataset(unpaired_train_data['x'], unpaired_train_data['y']) 
+        dataset = UnpairedDataset(unpaired_train_data['x'], unpaired_train_data2['y']) 
     g_origin = torch.Generator()
     g_origin.manual_seed(42)
     loader_unpaired = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, generator=g_origin)
@@ -172,6 +189,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, default='xy', help='Training mode: xy or x')
     parser.add_argument('--tag', type=str, default='default', help='Tag for the experiment')
     parser.add_argument('--attenuation', type=float, default=0.05, help='Attenuation factor for X generation')
+    parser.add_argument('--unrelated_info', action='store_true', help='Whether to add unrelated information to X')
     # args = parser.parse_args()
 
     if outer_args.slurm:

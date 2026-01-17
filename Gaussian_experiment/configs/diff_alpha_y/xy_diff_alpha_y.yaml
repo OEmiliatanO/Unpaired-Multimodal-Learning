@@ -1,0 +1,20 @@
+dim_common: [128] # as settings in paper
+dim_latent: [10] # as settings in paper
+data_dim_common: [10] # as settings in paper
+data_dim_x: [5] # as settings in paper
+data_dim_y: [5] # as settings in paper
+dim_obs: [50] # as settings in paper
+num_steps: [10000]
+noise_std: [0.09] # as settings in paper
+train_num_samples: [10000]
+batch_size: [512]
+val_num_samples: [2000]
+lr: [1.0e-3]
+seed: [0,1,2]
+alpha_x: [1.0]
+alpha_y: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+# alpha_y: [1.5, 2.0, 5.0, 10.0]
+mode: ['xy']
+attenuation: [0.05]
+tag: ['different_alpha_y_new']
+unrelated_info: [false]
